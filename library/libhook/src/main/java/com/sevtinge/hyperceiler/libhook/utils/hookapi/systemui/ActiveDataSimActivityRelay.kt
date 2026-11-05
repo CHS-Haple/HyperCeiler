@@ -15,7 +15,7 @@ import java.util.function.Consumer
  * The outer ViewModel fields are never overwritten; the native Binder gets a
  * stable Flow only for the retained slot-0 view.
  */
-internal class ActiveDataSimActivityRelay(private val defaultValue: Any) {
+internal class ActiveDataSimActivityRelay(private val defaultValue: Any, private val name: String) {
     private class Source(val flow: Any, var job: KotlinJob? = null)
 
     private val lock = Any()
@@ -41,8 +41,13 @@ internal class ActiveDataSimActivityRelay(private val defaultValue: Any) {
                     synchronized(lock) {
                         if (sources[subId] === source) {
                             lastValues[subId] = value
-                            if (subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
-                                proxy?.let { setStateFlowValue(it, value) }
+                            val selected = subId == SubscriptionManager.getDefaultDataSubscriptionId()
+                            Sim2ActivityTrace.log("outer.$name source selected=$selected", slot, originalFlow, value)
+                            if (selected) {
+                                proxy?.let {
+                                    setStateFlowValue(it, value)
+                                    Sim2ActivityTrace.log("outer.$name forwarded", slot, it, value)
+                                }
                             }
                         }
                     }
@@ -55,6 +60,7 @@ internal class ActiveDataSimActivityRelay(private val defaultValue: Any) {
                 return@synchronized null
             }
             source.job = collector
+            Sim2ActivityTrace.log("outer.$name sourceAttached", slot, originalFlow, lastValues[subId])
         }
 
         if (slot != 0) return@synchronized null
@@ -65,8 +71,7 @@ internal class ActiveDataSimActivityRelay(private val defaultValue: Any) {
             ?: sources[activeSubId]?.flow?.let {
                 runCatching { getStateFlowValue(it) }.getOrNull()
             }
-            ?: lastValues[subId]
-            ?: defaultValue
+            ?: if (activeSubId == subId) lastValues[subId] ?: defaultValue else defaultValue
         newReadonlyStateFlow(initialValue).also { proxy = it }
     }
 
@@ -77,6 +82,9 @@ internal class ActiveDataSimActivityRelay(private val defaultValue: Any) {
                 runCatching { getStateFlowValue(it) }.getOrNull()
             }
             ?: defaultValue
-        proxy?.let { setStateFlowValue(it, value) }
+        proxy?.let {
+            setStateFlowValue(it, value)
+            Sim2ActivityTrace.log("outer.$name switched", SubscriptionManager.getSlotIndex(activeSubId), it, value)
+        }
     }
 }
