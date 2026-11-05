@@ -19,6 +19,7 @@
 package com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui
 
 import com.sevtinge.hyperceiler.libhook.base.BaseHook
+import com.sevtinge.hyperceiler.libhook.utils.api.DeviceHelper.System.isMoreAndroidVersion
 import io.github.lingqiqi5211.ezhooktool.core.callMethod
 import java.lang.reflect.Modifier
 import java.util.concurrent.CancellationException
@@ -33,7 +34,7 @@ class JavaAdapter(instance: Any) : BaseReflectObject(instance) {
         // throws after the subscription has already been created.
         // The native implementation delegates to its static three-argument
         // overload with applicationScope, which DOES return StandaloneCoroutine.
-        val voidOverload = adapterClass.methods.any { method ->
+        val voidOverload = isMoreAndroidVersion(37) && adapterClass.methods.any { method ->
             method.name == "alwaysCollectFlow" &&
                 method.parameterCount == 2 &&
                 method.parameterTypes[1] == Consumer::class.java &&
