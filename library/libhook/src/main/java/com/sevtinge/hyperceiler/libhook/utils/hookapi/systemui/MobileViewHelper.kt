@@ -36,7 +36,6 @@ import io.github.lingqiqi5211.ezhooktool.xposed.dsl.getObjectFieldAs
 import io.github.lingqiqi5211.ezhooktool.core.loadClass
 import io.github.lingqiqi5211.ezhooktool.xposed.EzXposed
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Consumer
 
 /**
@@ -47,33 +46,7 @@ import java.util.function.Consumer
 class DataSimFlowProxy(
     private val defaultValue: Any,
     private val keepProxyIdentity: Boolean = false,
-    private val debugLabel: String? = null,
-    private val debugSnapshot: (() -> String)? = null,
-    private val onForwarded: (() -> Unit)? = null,
 ) {
-    private val eventLimits = ConcurrentHashMap<String, AtomicInteger>()
-    private val lastEvents = ConcurrentHashMap<String, String>()
-
-    private fun trace(stage: String, slot: Int, value: Any?) {
-        val label = debugLabel ?: return
-        val defaultSlot = runCatching {
-            SubscriptionManager.getSlotIndex(SubscriptionManager.getDefaultDataSubscriptionId())
-        }.getOrDefault(-1)
-        val key = "$label|$stage|$slot|$defaultSlot"
-        val safeValue = when (value) {
-            is Int, is Boolean -> value.toString()
-            null -> "null"
-            else -> "other"
-        }
-        // Keep state transitions, not every repeated SystemUI repaint.
-        if (lastEvents.put(key, safeValue) == safeValue) return
-        if (eventLimits.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet() > 60) return
-        val snapshot = runCatching { debugSnapshot?.invoke() }.getOrNull()
-        android.util.Log.i(
-            "HC-SIM2-DIAG",
-            "stage=$stage flow=$label slot=$slot dataSlot=$defaultSlot value=$safeValue${snapshot?.let { " $it" } ?: ""}"
-        )
-    }
     @Volatile
     var proxy: Any? = null
         private set
@@ -91,7 +64,6 @@ class DataSimFlowProxy(
         isSingleSimMode: () -> Boolean,
     ) {
         originalFlows[subId] = originalFlow
-        trace("registered", slotIndex, runCatching { getStateFlowValue(originalFlow) }.getOrNull())
         if (slotIndex == 0) {
             val defaultDataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
             val initValue = if (isSingleSimMode() || subId == defaultDataSubId) {
@@ -118,29 +90,22 @@ class DataSimFlowProxy(
             } else {
                 newReadonlyStateFlow(initValue).also { proxy = it }
             }
-            trace("proxy-initial", slotIndex, runCatching { getStateFlowValue(p) }.getOrNull())
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                trace("source", slotIndex, value)
                 // When a subscription is rebound to another ViewModel, only
                 // its newest upstream Flow may drive the shared activity proxy.
                 if ((!keepProxyIdentity || originalFlows[subId] === originalFlow) &&
                     (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId())
                 ) {
                     setStateFlowValue(p, value)
-                    trace("forwarded", slotIndex, value)
-                    runCatching { onForwarded?.invoke() }
                 }
             })
         } else {
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                trace("source", slotIndex, value)
                 if ((!keepProxyIdentity || originalFlows[subId] === originalFlow) &&
                     subId == SubscriptionManager.getDefaultDataSubscriptionId()
                 ) {
                     proxy?.let { p ->
                         setStateFlowValue(p, value)
-                        trace("forwarded", slotIndex, value)
-                        runCatching { onForwarded?.invoke() }
                     }
                 }
             })
@@ -155,7 +120,6 @@ class DataSimFlowProxy(
             proxy?.let { p ->
                 val value = getStateFlowValue(targetFlow) ?: defaultValue
                 setStateFlowValue(p, value)
-                trace("sync", SubscriptionManager.getSlotIndex(activeDataSubId), value)
             }
         }
     }
