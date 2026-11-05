@@ -147,6 +147,28 @@ object MobileTypeSingle2Hook : BaseHook() {
                 ?.let(::registerDataSimBroadcast)
         }
         hookMobileViewAndVM()
+        if (isMoreAndroidVersion(37) && isEnableDouble && !hideIndicator) {
+            hookOuterActivityGettersForDiagnostics()
+        }
+    }
+
+    /**
+     * Exact SystemUI 17.03.260226.r DEX: MiuiMobileIconBinder collector lambdas
+     * invoke the OUTER MiuiMobileIconViewModel activity getters.
+     * Observe the returned Flow identity without substituting any value.
+     */
+    private fun hookOuterActivityGettersForDiagnostics() {
+        val outerVmClass = loadClass(
+            "com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MiuiMobileIconVMImpl"
+        )
+        for (getter in listOf("getInOutVisible", "getInOutResId")) {
+            outerVmClass.findMethod { name(getter) }.createInterceptHook { chain ->
+                val originalFlow = chain.proceed()
+                Sim2ActivityTrace.log("outerGetter $getter", -1, originalFlow, null)
+                originalFlow
+            }
+            Sim2ActivityTrace.log("outerGetter registered=$getter", -1, null, null)
+        }
     }
 
     @SuppressLint("MissingPermission")
