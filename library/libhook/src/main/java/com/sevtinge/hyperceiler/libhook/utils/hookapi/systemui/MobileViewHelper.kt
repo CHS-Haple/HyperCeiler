@@ -36,7 +36,6 @@ import io.github.lingqiqi5211.ezhooktool.xposed.dsl.getObjectFieldAs
 import io.github.lingqiqi5211.ezhooktool.core.loadClass
 import io.github.lingqiqi5211.ezhooktool.xposed.EzXposed
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Consumer
 
 /**
@@ -44,49 +43,7 @@ import java.util.function.Consumer
  * 始终反映当前上网卡对应的原始 Flow 值，用于双排信号模式下
  * slot 0 代理显示当前上网卡的属性（如 showName、isDataConnected）。
  */
-internal object Sim2ActivityTrace {
-    private const val TAG = "HC-SIM2-DIAG"
-    // Limit each diagnostic stage independently, and keep separate budgets for
-    // each default-data slot. Startup rebinds must not exhaust SIM2 evidence.
-    private const val MAX_EVENTS_PER_GROUP = 100
-    private val counters = ConcurrentHashMap<String, AtomicInteger>()
-    private val lastEvent = ConcurrentHashMap<String, String>()
-
-    fun log(stage: String, slotIndex: Int, flow: Any?, value: Any?) {
-        runCatching {
-            // Telephony may not be ready while SystemUI hooks initialize.
-            // Failure to resolve the active slot must not suppress the diagnostic itself.
-            val dataSlot = runCatching {
-                SubscriptionManager.getSlotIndex(
-                    SubscriptionManager.getDefaultDataSubscriptionId()
-                )
-            }.getOrDefault(-1)
-            val safeValue = when (value) {
-                null -> "null"
-                is Boolean, is Int -> value.toString()
-                else -> "other"
-            }
-            val group = stage.substringBefore(" selected=")
-                .substringBefore(" self=")
-                .substringBefore(" visibility=")
-                .substringBefore(" selectedFlowPresent=")
-            val key = "$group|slot=$slotIndex|dataSlot=$dataSlot"
-            val detail = "stage=$stage slot=$slotIndex dataSlot=$dataSlot flowId=${flow?.let(System::identityHashCode) ?: 0} value=$safeValue"
-
-            // Avoid logging unchanged values on every view refresh.
-            if (lastEvent.put(key, detail) == detail) return@runCatching
-            if (counters.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet() > MAX_EVENTS_PER_GROUP) {
-                return@runCatching
-            }
-            android.util.Log.i(TAG, detail)
-        }
-    }
-}
-
-class DataSimFlowProxy(
-    private val defaultValue: Any,
-    private val debugLabel: String? = null,
-) {
+class DataSimFlowProxy(private val defaultValue: Any) {
     @Volatile
     var proxy: Any? = null
         private set
@@ -104,14 +61,6 @@ class DataSimFlowProxy(
         isSingleSimMode: () -> Boolean,
     ) {
         originalFlows[subId] = originalFlow
-        if (debugLabel != null) {
-            Sim2ActivityTrace.log(
-                "$debugLabel register self=${originalFlow === proxy}",
-                slotIndex,
-                originalFlow,
-                runCatching { getStateFlowValue(originalFlow) }.getOrNull()
-            )
-        }
         if (slotIndex == 0) {
             val defaultDataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
             val initValue = if (isSingleSimMode() || subId == defaultDataSubId) {
@@ -121,28 +70,15 @@ class DataSimFlowProxy(
             }
             val p = newReadonlyStateFlow(initValue)
             proxy = p
-            if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel proxy-created", slotIndex, p, initValue)
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                val selected = isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()
-                if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel source selected=$selected", slotIndex, originalFlow, value)
-                if (selected) {
+                if (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
                     setStateFlowValue(p, value)
-                    if (debugLabel != null) {
-                        Sim2ActivityTrace.log("$debugLabel forwarded", slotIndex, p, runCatching { getStateFlowValue(p) }.getOrNull())
-                    }
                 }
             })
         } else {
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                val selected = subId == SubscriptionManager.getDefaultDataSubscriptionId()
-                if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel source selected=$selected", slotIndex, originalFlow, value)
-                if (selected) {
-                    proxy?.let { p ->
-                        setStateFlowValue(p, value)
-                        if (debugLabel != null) {
-                            Sim2ActivityTrace.log("$debugLabel forwarded", slotIndex, p, runCatching { getStateFlowValue(p) }.getOrNull())
-                        }
-                    }
+                if (subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
+                    proxy?.let { p -> setStateFlowValue(p, value) }
                 }
             })
         }
@@ -152,14 +88,6 @@ class DataSimFlowProxy(
     fun syncFromBroadcast(slot0SubId: Int) {
         val activeDataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
         val targetFlow = originalFlows[activeDataSubId] ?: originalFlows[slot0SubId]
-        if (debugLabel != null) {
-            Sim2ActivityTrace.log(
-                "$debugLabel broadcast selectedFlowPresent=${originalFlows.containsKey(activeDataSubId)}",
-                SubscriptionManager.getSlotIndex(activeDataSubId),
-                targetFlow,
-                runCatching { getStateFlowValue(targetFlow) }.getOrNull()
-            )
-        }
         if (targetFlow != null) {
             proxy?.let { p ->
                 setStateFlowValue(p, getStateFlowValue(targetFlow) ?: defaultValue)
