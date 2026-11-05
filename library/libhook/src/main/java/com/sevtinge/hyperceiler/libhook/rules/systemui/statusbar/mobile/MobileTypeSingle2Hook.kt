@@ -247,12 +247,13 @@ object MobileTypeSingle2Hook : BaseHook() {
             interactor.getObjectFieldAs<Int>("subId")
         }.getOrNull() ?: return
 
-        // Bind can be called for the same provider more than once.
-        if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor) return
-
-        viewModel.setAdditionalInstanceField("interactor", interactor)
-        viewModel.setObjectField("wifiAvailable", interactor.getObjectField("wifiAvailable"))
-        applyViewModelState(viewModel, interactor, subId)
+        // Bind may run again for the same provider; do not register duplicate
+        // upstream collectors. Still verify the outer resource binding below.
+        if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") !== interactor) {
+            viewModel.setObjectField("wifiAvailable", interactor.getObjectField("wifiAvailable"))
+            applyViewModelState(viewModel, interactor, subId)
+            viewModel.setAdditionalInstanceField("interactor", interactor)
+        }
 
         if (isEnableDouble && !hideIndicator &&
             SubscriptionManager.getSlotIndex(subId) == 0
@@ -262,7 +263,9 @@ object MobileTypeSingle2Hook : BaseHook() {
             // The outer inOutVisible transformLatest instead resolves the
             // inner provider Flow when collected, after this pre-bind setup.
             inOutResIdProxy.proxy?.let { activityResFlow ->
-                vmImpl.setObjectField("inOutResId", activityResFlow)
+                if (vmImpl.getObjectField("inOutResId") !== activityResFlow) {
+                    vmImpl.setObjectField("inOutResId", activityResFlow)
+                }
             }
         }
     }
