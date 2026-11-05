@@ -68,11 +68,8 @@ class DataSimFlowProxy(private val defaultValue: Any) {
             } else {
                 originalFlows[defaultDataSubId]?.let { getStateFlowValue(it) } ?: defaultValue
             }
-            // Keep one proxy across slot-0 view-model bindings. A new proxy would
-            // leave earlier views collecting a stale flow when slot 1 becomes the data SIM.
-            val p = synchronized(this) {
-                proxy ?: newReadonlyStateFlow(initValue).also { proxy = it }
-            }
+            val p = newReadonlyStateFlow(initValue)
+            proxy = p
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
                 if (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
                     setStateFlowValue(p, value)
