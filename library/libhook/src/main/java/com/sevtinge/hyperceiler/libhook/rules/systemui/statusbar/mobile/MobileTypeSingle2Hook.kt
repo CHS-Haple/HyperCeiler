@@ -46,6 +46,7 @@ import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.getStateFl
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.newReadonlyStateFlow
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.setStateFlowValue
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.DataSimFlowProxy
+import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.Sim2ActivityTrace
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.KotlinJob
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.MiuiStub
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.MobileClass.mOperatorConfig
@@ -91,8 +92,8 @@ object MobileTypeSingle2Hook : BaseHook() {
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
 
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(false)
-    private val inOutResIdProxy = DataSimFlowProxy(0)
+    private val inOutVisibleProxy = DataSimFlowProxy(false, "inOutVisible")
+    private val inOutResIdProxy = DataSimFlowProxy(0, "inOutResId")
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
@@ -785,6 +786,14 @@ object MobileTypeSingle2Hook : BaseHook() {
             smallVisible = resolvedSmallVisible,
             showName = renderState.showName
         )
+        if (isEnableDouble && !hideIndicator && SubscriptionManager.getSlotIndex(viewSubId) == 0) {
+            Sim2ActivityTrace.log(
+                "nativeView visibility=${inOutView?.visibility ?: -1} shown=${inOutView?.isShown ?: false} drawable=${inOutView?.drawable != null}",
+                0,
+                inOutView,
+                renderState.inOutVisible
+            )
+        }
     }
 
     private fun updateMobileTypeDrawable(imageView: ImageView, showName: String) {
