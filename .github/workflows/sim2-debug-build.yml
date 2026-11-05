@@ -45,6 +45,14 @@ jobs:
           git status --short
           git rev-parse HEAD
 
+      # Keep a stable *debug-only* signing key for repeat test builds.
+      # This does not use or expose the official publishing certificate.
+      - name: Cache fork debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: hyperceiler-sim2-debug-signing-v1
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
