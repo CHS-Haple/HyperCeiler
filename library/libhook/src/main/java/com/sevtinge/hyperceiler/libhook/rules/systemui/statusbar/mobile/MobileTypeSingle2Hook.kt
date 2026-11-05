@@ -156,8 +156,35 @@ object MobileTypeSingle2Hook : BaseHook() {
         }
 
         if (isMoreAndroidVersion(37)) {
-            // OS4: 工厂先构建外层 MiuiMobileIconVMImpl，再调用原生 bind。
-            // bind 前仅处理活动 Flow，其他 ViewModel 状态沿用 bind 后处理。
+            // Exact SystemUI 17.03.260226.r:
+            // MobileIconsViewModel.createViewModel(I) returns a Triple whose
+            // THIRD member is MiuiMobileIconVMImpl. Capture both subscriptions
+            // at creation, regardless of whether their views are displayed.
+            if (isEnableDouble && !hideIndicator) {
+                loadClass("com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MobileIconsViewModel")
+                    .findMethod { name("createViewModel") }
+                    .createAfterHook { param ->
+                        val outerVm = runCatching {
+                            param.result?.callMethodOrNull("getThird")
+                        }.getOrNull()
+                        val slot = (param.args.getOrNull(0) as? Int)
+                            ?.let(SubscriptionManager::getSlotIndex) ?: -1
+                        android.util.Log.i(
+                            "HC-SIM2-DIAG",
+                            "stage=factory slot=$slot outerPresent=${outerVm != null}"
+                        )
+                        runCatching { prepareOs4ActivityBeforeBind(outerVm) }
+                            .onFailure {
+                                android.util.Log.w(
+                                    "HC-SIM2-DIAG",
+                                    "stage=factory-error slot=$slot type=${it.javaClass.simpleName}"
+                                )
+                                XposedLog.w(TAG, lpparam.packageName, "Activity factory preparation failed: ${it.message}")
+                            }
+                    }
+            }
+            // Keep the existing pre-bind fallback for previously-created VMs.
+            // All unrelated ViewModel properties are still updated after bind.
             miuiMobileIconBinder.findMethod { name("bind") }
                 .createInterceptHook { chain ->
                     if (isEnableDouble && !hideIndicator) {
