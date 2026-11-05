@@ -128,7 +128,7 @@ class DataSimFlowProxy(
                 ) {
                     setStateFlowValue(p, value)
                     trace("forwarded", slotIndex, value)
-                    onForwarded?.invoke()
+                    runCatching { onForwarded?.invoke() }
                 }
             })
         } else {
@@ -140,7 +140,7 @@ class DataSimFlowProxy(
                     proxy?.let { p ->
                         setStateFlowValue(p, value)
                         trace("forwarded", slotIndex, value)
-                        onForwarded?.invoke()
+                        runCatching { onForwarded?.invoke() }
                     }
                 }
             })
