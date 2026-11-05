@@ -46,11 +46,13 @@ import java.util.function.Consumer
  */
 internal object Sim2ActivityTrace {
     private const val TAG = "HC-SIM2-DIAG"
-    private val emitted = AtomicInteger(0)
-    private const val MAX_EVENTS = 240
+    // Limit each diagnostic stage independently, and keep separate budgets for
+    // each default-data slot. Startup rebinds must not exhaust SIM2 evidence.
+    private const val MAX_EVENTS_PER_GROUP = 100
+    private val counters = ConcurrentHashMap<String, AtomicInteger>()
+    private val lastEvent = ConcurrentHashMap<String, String>()
 
     fun log(stage: String, slotIndex: Int, flow: Any?, value: Any?) {
-        if (emitted.incrementAndGet() > MAX_EVENTS) return
         runCatching {
             val dataSlot = SubscriptionManager.getSlotIndex(
                 SubscriptionManager.getDefaultDataSubscriptionId()
@@ -60,10 +62,19 @@ internal object Sim2ActivityTrace {
                 is Boolean, is Int -> value.toString()
                 else -> "other"
             }
-            android.util.Log.i(
-                TAG,
-                "stage=$stage slot=$slotIndex dataSlot=$dataSlot flowId=${flow?.let(System::identityHashCode) ?: 0} value=$safeValue"
-            )
+            val group = stage.substringBefore(" selected=")
+                .substringBefore(" self=")
+                .substringBefore(" visibility=")
+                .substringBefore(" selectedFlowPresent=")
+            val key = "$group|slot=$slotIndex|dataSlot=$dataSlot"
+            val detail = "stage=$stage slot=$slotIndex dataSlot=$dataSlot flowId=${flow?.let(System::identityHashCode) ?: 0} value=$safeValue"
+
+            // Avoid logging unchanged values on every view refresh.
+            if (lastEvent.put(key, detail) == detail) return@runCatching
+            if (counters.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet() > MAX_EVENTS_PER_GROUP) {
+                return@runCatching
+            }
+            android.util.Log.i(TAG, detail)
         }
     }
 }
