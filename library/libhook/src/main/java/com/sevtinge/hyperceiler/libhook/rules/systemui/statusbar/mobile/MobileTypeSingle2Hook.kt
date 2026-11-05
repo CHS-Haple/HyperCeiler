@@ -45,6 +45,7 @@ import com.sevtinge.hyperceiler.libhook.utils.api.DisplayUtils.dp2px
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.getStateFlowValue
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.newReadonlyStateFlow
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.setStateFlowValue
+import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.ActiveDataSimActivityRelay
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.DataSimFlowProxy
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.Sim2ActivityTrace
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.KotlinJob
@@ -94,6 +95,8 @@ object MobileTypeSingle2Hook : BaseHook() {
     private val showNameFlowProxy = DataSimFlowProxy("")
     private val inOutVisibleProxy = DataSimFlowProxy(false, "inOutVisible")
     private val inOutResIdProxy = DataSimFlowProxy(0, "inOutResId")
+    private val outerActivityVisible = ActiveDataSimActivityRelay(false)
+    private val outerActivityResId = ActiveDataSimActivityRelay(0)
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
@@ -142,6 +145,9 @@ object MobileTypeSingle2Hook : BaseHook() {
             -1, null, null
         )
         BaseHook.registerHandlerHotReloadCleanup(mainHandler)
+        if (isEnableDouble && !hideIndicator && isMoreAndroidVersion(37)) {
+            hookOs4OuterActivity()
+        }
         if (isEnableDouble) {
             getHotReloadRuntimeState(DATA_SIM_CONTEXT_KEY, Context::class.java)
                 ?.let(::registerDataSimBroadcast)
@@ -169,6 +175,60 @@ object MobileTypeSingle2Hook : BaseHook() {
             }
             Sim2ActivityTrace.log("outerGetter registered=$getter", -1, null, null)
         }
+    }
+
+    /**
+     * SystemUI 17: the native Binder collects MiuiMobileIconVMImpl's outer
+     * getters. InOutResId is snapshotted when createViewModel builds the VM,
+     * while InOutVisible is a ChannelFlowTransformLatest. Neither outer field
+     * may safely be replaced by a ReadonlyStateFlow after bind().
+     */
+    @SuppressLint("MissingPermission")
+    private fun hookOs4OuterActivity() {
+        val outerClassName =
+            "com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MiuiMobileIconVMImpl"
+        val outerClass = loadClass(outerClassName)
+
+        listOf(
+            "getInOutVisible" to outerActivityVisible,
+            "getInOutResId" to outerActivityResId
+        ).forEach { (methodName, relay) ->
+            outerClass.findMethod { name(methodName); noParams() }.createAfterHook { param ->
+                val nativeFlow = param.result ?: return@createAfterHook
+                val subId = runCatching {
+                    param.thisObject.getObjectFieldAs<Any>("iconInteractor")
+                        .getObjectFieldAs<Int>("subId")
+                }.getOrNull() ?: return@createAfterHook
+                val slot = SubscriptionManager.getSlotIndex(subId)
+                if (slot !in 0..1) return@createAfterHook
+
+                val proxy = runCatching { relay.attach(subId, slot, nativeFlow) }.getOrNull()
+                Sim2ActivityTrace.log("outer $methodName registered=${proxy != null || slot == 1}",
+                    slot, nativeFlow, null)
+                if (slot == 0 && proxy != null) {
+                    param.result = proxy
+                }
+                runCatching { registerDataSimBroadcast() }
+            }
+        }
+
+        // Prime both SIM sources at VM creation; slot-1's view may be hidden,
+        // so waiting for its Binder collector can leave its Flow unregistered.
+        loadClass("com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MobileIconsViewModel")
+            .findMethod { name("createViewModel"); paramCount(1) }
+            .createAfterHook { param ->
+                val triple = param.result as? Triple<*, *, *> ?: return@createAfterHook
+                val outer = listOf(triple.first, triple.second, triple.third)
+                    .firstOrNull { it?.javaClass?.name == outerClassName }
+                    ?: return@createAfterHook
+                runCatching {
+                    outer.callMethodAs<Any>("getInOutVisible")
+                    outer.callMethodAs<Any>("getInOutResId")
+                }.onFailure {
+                    XposedLog.w(TAG, lpparam.packageName,
+                        "outer activity Flow registration failed: ${it.javaClass.simpleName}")
+                }
+            }
     }
 
     @SuppressLint("MissingPermission")
@@ -322,7 +382,9 @@ object MobileTypeSingle2Hook : BaseHook() {
                     viewModel.setObjectField("showName", showNameFlowProxy.proxy!!)
                 }
             }
-            if (!hideIndicator) {
+            // OS4's Binder uses outer MiuiMobileIconVMImpl flows, not these
+            // inner fields. Keep legacy inner proxying only for OS3.
+            if (!hideIndicator && !isMoreAndroidVersion(37)) {
                 viewModel.getObjectField("inOutVisible")?.let { originalFlow ->
                     inOutVisibleProxy.setupForSlot(
                         slotIndex,
@@ -653,6 +715,10 @@ object MobileTypeSingle2Hook : BaseHook() {
         showNameFlowProxy.syncFromBroadcast(slot0SubId)
         inOutVisibleProxy.syncFromBroadcast(slot0SubId)
         inOutResIdProxy.syncFromBroadcast(slot0SubId)
+        if (isMoreAndroidVersion(37) && !hideIndicator) {
+            outerActivityVisible.syncActive()
+            outerActivityResId.syncActive()
+        }
         mobileTypeSingleVisibleProxy.syncFromBroadcast(slot0SubId)
         mobileTypeVisibleProxy.syncFromBroadcast(slot0SubId)
     }
