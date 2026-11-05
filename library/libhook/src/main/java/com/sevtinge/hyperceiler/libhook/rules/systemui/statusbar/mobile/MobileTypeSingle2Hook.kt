@@ -90,9 +90,19 @@ object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
     private val activityBinderTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val activityViewTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val previousActivityViewSnapshots = ConcurrentHashMap<Int, String>()
+    @Volatile
+    private var slot0OuterActivityVm: java.lang.ref.WeakReference<Any>? = null
 
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(false, keepProxyIdentity = true, debugLabel = "visible")
+    private val inOutVisibleProxy = DataSimFlowProxy(
+        false,
+        keepProxyIdentity = true,
+        debugLabel = "visible",
+        debugSnapshot = ::activityFlowSnapshot,
+        onForwarded = ::scheduleActivityViewSnapshot
+    )
     private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true, debugLabel = "resource")
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
@@ -272,6 +282,47 @@ object MobileTypeSingle2Hook : BaseHook() {
         }
     }
 
+    private fun activityFlowSnapshot(): String {
+        val activeId = runCatching { SubscriptionManager.getDefaultDataSubscriptionId() }.getOrDefault(-1)
+        val resourceSource = inOutResIdProxy.originalFlows[activeId]
+        val sourceResourceId = runCatching { getStateFlowValue(resourceSource) as? Int }.getOrNull()
+        val proxyResourceId = runCatching { getStateFlowValue(inOutResIdProxy.proxy) as? Int }.getOrNull()
+        val proxyVisible = runCatching { getStateFlowValue(inOutVisibleProxy.proxy) as? Boolean }.getOrNull()
+        val outerVm = slot0OuterActivityVm?.get()
+        val outerResource = runCatching { outerVm?.getObjectField("inOutResId") }.getOrNull()
+        val outerVisibility = runCatching { outerVm?.getObjectField("isVisible") }.getOrNull()
+        val outerVisible = runCatching { getStateFlowValue(outerVisibility) as? Boolean }.getOrNull()
+        return "resRegistered=${resourceSource != null} resSource=${sourceResourceId ?: -1} resProxy=${proxyResourceId ?: -1} visibleProxy=${proxyVisible ?: false} outerResProxy=${outerResource === inOutResIdProxy.proxy} outerIsVisible=${outerVisible ?: false}"
+    }
+
+    private fun scheduleActivityViewSnapshot() {
+        mainHandler.post {
+            if (activityViewTraceCount.incrementAndGet() > 100) return@post
+            val dataSlot = runCatching {
+                SubscriptionManager.getSlotIndex(SubscriptionManager.getDefaultDataSubscriptionId())
+            }.getOrDefault(-1)
+            var found = false
+            boundViews.values.forEach { views ->
+                views.forEach { root ->
+                    val slot = runCatching {
+                        SubscriptionManager.getSlotIndex(root.getIntField("subId"))
+                    }.getOrDefault(-1)
+                    if (slot != 0) return@forEach
+                    found = true
+                    val iconView = root.findViewByIdName("mobile_left_mobile_inout") as? ImageView
+                    val snapshot = "stage=native-after-forward dataSlot=$dataSlot rootVisibility=${root.visibility} iconPresent=${iconView != null} iconVisibility=${iconView?.visibility ?: -1} drawable=${iconView?.drawable != null} iconTag=${iconView?.tag as? Int ?: -1} ${activityFlowSnapshot()}"
+                    val key = System.identityHashCode(root)
+                    if (previousActivityViewSnapshots.put(key, snapshot) != snapshot) {
+                        android.util.Log.i("HC-SIM2-DIAG", snapshot)
+                    }
+                }
+            }
+            if (!found && previousActivityViewSnapshots.put(-1, "none-$dataSlot") != "none-$dataSlot") {
+                android.util.Log.i("HC-SIM2-DIAG", "stage=native-after-forward dataSlot=$dataSlot boundSlot0=false")
+            }
+        }
+    }
+
     /**
      * Exact SystemUI 17.03.260226.r DEX: MobileIconsViewModel.createViewModel
      * captures the inner inOutResId into the OUTER MiuiMobileIconVMImpl
@@ -304,6 +355,7 @@ object MobileTypeSingle2Hook : BaseHook() {
         }.getOrNull() ?: return
         val slot = SubscriptionManager.getSlotIndex(subId)
         if (slot < 0) return
+        if (slot == 0) slot0OuterActivityVm = java.lang.ref.WeakReference(vmImpl)
 
         // Verify the actual Flow identity, not a flag left on a ViewModel
         // from an earlier LSPosed hot-reload generation.
