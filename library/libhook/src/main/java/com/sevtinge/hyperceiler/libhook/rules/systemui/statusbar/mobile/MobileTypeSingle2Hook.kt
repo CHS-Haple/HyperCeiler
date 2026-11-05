@@ -45,9 +45,7 @@ import com.sevtinge.hyperceiler.libhook.utils.api.DisplayUtils.dp2px
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.getStateFlowValue
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.newReadonlyStateFlow
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.StateFlowHelper.setStateFlowValue
-import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.ActiveDataSimActivityRelay
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.DataSimFlowProxy
-import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.Sim2ActivityTrace
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.KotlinJob
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.MiuiStub
 import com.sevtinge.hyperceiler.libhook.utils.hookapi.systemui.MobileClass.mOperatorConfig
@@ -93,10 +91,8 @@ object MobileTypeSingle2Hook : BaseHook() {
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
 
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(false, "inOutVisible")
-    private val inOutResIdProxy = DataSimFlowProxy(0, "inOutResId")
-    private val outerActivityVisible = ActiveDataSimActivityRelay(false)
-    private val outerActivityResId = ActiveDataSimActivityRelay(0)
+    private val inOutVisibleProxy = DataSimFlowProxy(false)
+    private val inOutResIdProxy = DataSimFlowProxy(0)
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
@@ -139,96 +135,12 @@ object MobileTypeSingle2Hook : BaseHook() {
     private val refreshBoundViewsRunnable = Runnable { refreshBoundViewsNow() }
 
     override fun init() {
-        // Diagnostic only: record which Android binding branch was installed.
-        Sim2ActivityTrace.log(
-            "hook.init sdk=${android.os.Build.VERSION.SDK_INT} modern=${isMoreAndroidVersion(37)} double=$isEnableDouble hide=$hideIndicator",
-            -1, null, null
-        )
         BaseHook.registerHandlerHotReloadCleanup(mainHandler)
-        if (isEnableDouble && !hideIndicator && isMoreAndroidVersion(37)) {
-            hookOs4OuterActivity()
-        }
         if (isEnableDouble) {
             getHotReloadRuntimeState(DATA_SIM_CONTEXT_KEY, Context::class.java)
                 ?.let(::registerDataSimBroadcast)
         }
         hookMobileViewAndVM()
-        if (isMoreAndroidVersion(37) && isEnableDouble && !hideIndicator) {
-            hookOuterActivityGettersForDiagnostics()
-        }
-    }
-
-    /**
-     * Exact SystemUI 17.03.260226.r DEX: MiuiMobileIconBinder collector lambdas
-     * invoke the OUTER MiuiMobileIconViewModel activity getters.
-     * Observe the returned Flow identity without substituting any value.
-     */
-    private fun hookOuterActivityGettersForDiagnostics() {
-        val outerVmClass = loadClass(
-            "com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MiuiMobileIconVMImpl"
-        )
-        for (getter in listOf("getInOutVisible", "getInOutResId")) {
-            outerVmClass.findMethod { name(getter) }.createInterceptHook { chain ->
-                val originalFlow = chain.proceed()
-                Sim2ActivityTrace.log("outerGetter $getter", -1, originalFlow, null)
-                originalFlow
-            }
-            Sim2ActivityTrace.log("outerGetter registered=$getter", -1, null, null)
-        }
-    }
-
-    /**
-     * SystemUI 17: the native Binder collects MiuiMobileIconVMImpl's outer
-     * getters. InOutResId is snapshotted when createViewModel builds the VM,
-     * while InOutVisible is a ChannelFlowTransformLatest. Neither outer field
-     * may safely be replaced by a ReadonlyStateFlow after bind().
-     */
-    @SuppressLint("MissingPermission")
-    private fun hookOs4OuterActivity() {
-        val outerClassName =
-            "com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MiuiMobileIconVMImpl"
-        val outerClass = loadClass(outerClassName)
-
-        listOf(
-            "getInOutVisible" to outerActivityVisible,
-            "getInOutResId" to outerActivityResId
-        ).forEach { (methodName, relay) ->
-            outerClass.findMethod { name(methodName); noParams() }.createAfterHook { param ->
-                val nativeFlow = param.result ?: return@createAfterHook
-                val subId = runCatching {
-                    param.thisObject.getObjectFieldAs<Any>("iconInteractor")
-                        .getObjectFieldAs<Int>("subId")
-                }.getOrNull() ?: return@createAfterHook
-                val slot = SubscriptionManager.getSlotIndex(subId)
-                if (slot !in 0..1) return@createAfterHook
-
-                val proxy = runCatching { relay.attach(subId, slot, nativeFlow) }.getOrNull()
-                Sim2ActivityTrace.log("outer $methodName registered=${proxy != null || slot == 1}",
-                    slot, nativeFlow, null)
-                if (slot == 0 && proxy != null) {
-                    param.result = proxy
-                }
-                runCatching { registerDataSimBroadcast() }
-            }
-        }
-
-        // Prime both SIM sources at VM creation; slot-1's view may be hidden,
-        // so waiting for its Binder collector can leave its Flow unregistered.
-        loadClass("com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MobileIconsViewModel")
-            .findMethod { name("createViewModel"); paramCount(1) }
-            .createAfterHook { param ->
-                val triple = param.result as? Triple<*, *, *> ?: return@createAfterHook
-                val outer = listOf(triple.first, triple.second, triple.third)
-                    .firstOrNull { it?.javaClass?.name == outerClassName }
-                    ?: return@createAfterHook
-                runCatching {
-                    outer.callMethodAs<Any>("getInOutVisible")
-                    outer.callMethodAs<Any>("getInOutResId")
-                }.onFailure {
-                    XposedLog.w(TAG, lpparam.packageName,
-                        "outer activity Flow registration failed: ${it.javaClass.simpleName}")
-                }
-            }
     }
 
     @SuppressLint("MissingPermission")
@@ -246,48 +158,23 @@ object MobileTypeSingle2Hook : BaseHook() {
         if (isMoreAndroidVersion(37)) {
             // OS4: MiuiCellularIconVM 无参构造，字段在 bind 时才就绪；
             // binder 的 args[2] 即 MiuiMobileIconVMImpl，直接取其 cellProvider 与 interactor
-            Sim2ActivityTrace.log(
-                "binder hookRegister methods=${miuiMobileIconBinder.declaredMethods.count { it.name == "bind" }}",
-                -1, null, null
-            )
             miuiMobileIconBinder.findMethod { name("bind") }
-                .createAfterHook { param ->
-                    // Diagnostic only: distinguish a missed bind hook from early returns.
-                    // No subscription IDs or operator names are logged.
-                    Sim2ActivityTrace.log("binder entered", -1, param.thisObject, param.args.size)
-                    val vmImpl = param.args.getOrNull(2)
-                    Sim2ActivityTrace.log("binder vmImplPresent=${vmImpl != null}", -1, vmImpl, null)
-                    if (vmImpl == null) return@createAfterHook
+                .createInterceptHook { chain ->
+                    // In dual-row mode the native binder must see activity proxies
+                    // before it starts collecting the outer ViewModel flows.
+                    if (isEnableDouble) {
+                        runCatching { prepareOs4BoundViewModel(chain.args.getOrNull(2)) }
+                            .onFailure { XposedLog.w(TAG, lpparam.packageName, "SIM2 pre-bind setup failed: ${it.message}") }
+                    }
 
-                    val viewModel = runCatching {
-                        vmImpl.callMethodAs<Any>("getCellProvider")
-                    }.getOrNull()
-                    Sim2ActivityTrace.log("binder cellProviderPresent=${viewModel != null}", -1, viewModel, null)
-                    if (viewModel == null) return@createAfterHook
+                    val result = chain.proceed() // Exactly once; never replay native bind.
 
-                    val interactor = runCatching {
-                        vmImpl.getObjectFieldAs<Any>("iconInteractor")
-                    }.getOrNull()
-                    Sim2ActivityTrace.log("binder interactorPresent=${interactor != null}", -1, interactor, null)
-                    if (interactor == null) return@createAfterHook
-
-                    val subId = runCatching {
-                        interactor.getObjectFieldAs<Int>("subId")
-                    }.getOrNull()
-                    val slotIndex = subId?.let { SubscriptionManager.getSlotIndex(it) } ?: -1
-                    Sim2ActivityTrace.log("binder subIdPresent=${subId != null}", slotIndex, viewModel, null)
-                    if (subId == null) return@createAfterHook
-
-                    // bind 会对同一 VM 多次调用，已处理过则跳过
-                    val alreadyBound = viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor
-                    Sim2ActivityTrace.log("binder alreadyBound=$alreadyBound", slotIndex, viewModel, null)
-                    if (alreadyBound) return@createAfterHook
-                    viewModel.setAdditionalInstanceField("interactor", interactor)
-                    viewModel.setObjectField(
-                        "wifiAvailable",
-                        interactor.getObjectField("wifiAvailable")
-                    )
-                    applyViewModelState(viewModel, interactor, subId)
+                    // Preserve the original timing for non-dual-row configurations.
+                    if (!isEnableDouble) {
+                        runCatching { prepareOs4BoundViewModel(chain.args.getOrNull(2)) }
+                            .onFailure { XposedLog.w(TAG, lpparam.packageName, "OS4 post-bind setup failed: ${it.message}") }
+                    }
+                    result
                 }
         } else {
             Constructors.find(miuiCellularIconVM).first().createAfterHook { param ->
@@ -317,28 +204,9 @@ object MobileTypeSingle2Hook : BaseHook() {
             .forEach { method ->
                 method.createInterceptHook { chain ->
                     val result = chain.proceed()
-                    val rootView = result as? ViewGroup
-                    if (rootView == null) {
-                        Sim2ActivityTrace.log("host resultView=false", -1, result, null)
-                        return@createInterceptHook result
-                    }
-                    val viewSubId = runCatching { rootView.getIntField("subId") }.getOrDefault(-1)
-                    val slotIndex = runCatching { SubscriptionManager.getSlotIndex(viewSubId) }.getOrDefault(-1)
+                    val rootView = result as? ViewGroup ?: return@createInterceptHook result
                     val viewModel = resolveConstructAndBindViewModel(chain.args.toList())
-                    Sim2ActivityTrace.log(
-                        "host vmPresent=${viewModel != null} args=${chain.args.size}",
-                        slotIndex, rootView, null
-                    )
-                    if (viewModel == null) return@createInterceptHook result
-                    val visibleField = runCatching { viewModel.getObjectField("inOutVisible") }.getOrNull()
-                    val resourceField = runCatching { viewModel.getObjectField("inOutResId") }.getOrNull()
-                    val storedInteractor = runCatching {
-                        viewModel.getAdditionalInstanceFieldAs<Any?>("interactor")
-                    }.getOrNull()
-                    Sim2ActivityTrace.log(
-                        "host fields visible=${visibleField != null} resource=${resourceField != null} interactor=${storedInteractor != null}",
-                        slotIndex, viewModel, null
-                    )
+                        ?: return@createInterceptHook result
                     bindConstructedMobileViewIfNeeded(rootView, viewModel)
                     result
                 }
@@ -361,15 +229,47 @@ object MobileTypeSingle2Hook : BaseHook() {
         }
     }
 
+    /**
+     * The exact HyperOS 4 (17.03.260226.r) native ViewModel factory captures
+     * MiuiCellularIconVM.inOutResId in MiuiMobileIconVMImpl.inOutResId
+     * before MiuiMobileIconBinder.bind() is called. Therefore replacing only
+     * the inner field after bind cannot affect the native resource collector.
+     */
+    private fun prepareOs4BoundViewModel(vmImpl: Any?) {
+        if (vmImpl == null) return
+        val viewModel = runCatching {
+            vmImpl.callMethodAs<Any>("getCellProvider")
+        }.getOrNull() ?: return
+        val interactor = runCatching {
+            vmImpl.getObjectFieldAs<Any>("iconInteractor")
+        }.getOrNull() ?: return
+        val subId = runCatching {
+            interactor.getObjectFieldAs<Int>("subId")
+        }.getOrNull() ?: return
+
+        // Bind can be called for the same provider more than once.
+        if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor) return
+
+        viewModel.setAdditionalInstanceField("interactor", interactor)
+        viewModel.setObjectField("wifiAvailable", interactor.getObjectField("wifiAvailable"))
+        applyViewModelState(viewModel, interactor, subId)
+
+        if (isEnableDouble && !hideIndicator &&
+            SubscriptionManager.getSlotIndex(subId) == 0
+        ) {
+            // The outer field is declared as Flow (not ReadonlyStateFlow).
+            // Write the proxy before native bind reads getInOutResId().
+            // The outer inOutVisible transformLatest instead resolves the
+            // inner provider Flow when collected, after this pre-bind setup.
+            inOutResIdProxy.proxy?.let { activityResFlow ->
+                vmImpl.setObjectField("inOutResId", activityResFlow)
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun applyViewModelState(viewModel: Any, interactor: Any?, subId: Int) {
         val slotIndex = SubscriptionManager.getSlotIndex(subId)
-        Sim2ActivityTrace.log("vm apply double=$isEnableDouble hide=$hideIndicator", slotIndex, viewModel, null)
-        if (isEnableDouble && !hideIndicator) {
-            val visibleField = runCatching { viewModel.getObjectField("inOutVisible") }.getOrNull()
-            val resourceField = runCatching { viewModel.getObjectField("inOutResId") }.getOrNull()
-            Sim2ActivityTrace.log("vm activityFields visible=${visibleField != null} resource=${resourceField != null}", slotIndex, viewModel, null)
-        }
         if (isEnableDouble) {
             viewModel.getObjectField("showName")?.let { originalFlow ->
                 showNameFlowProxy.setupForSlot(
@@ -382,9 +282,7 @@ object MobileTypeSingle2Hook : BaseHook() {
                     viewModel.setObjectField("showName", showNameFlowProxy.proxy!!)
                 }
             }
-            // OS4's Binder uses outer MiuiMobileIconVMImpl flows, not these
-            // inner fields. Keep legacy inner proxying only for OS3.
-            if (!hideIndicator && !isMoreAndroidVersion(37)) {
+            if (!hideIndicator) {
                 viewModel.getObjectField("inOutVisible")?.let { originalFlow ->
                     inOutVisibleProxy.setupForSlot(
                         slotIndex,
@@ -441,7 +339,6 @@ object MobileTypeSingle2Hook : BaseHook() {
             subId,
             slotIndex
         )
-        Sim2ActivityTrace.log("vm collectorsAttached", slotIndex, viewModel, null)
 
         if (isEnableDouble) {
             syncDataSimProxiesNow()
@@ -715,10 +612,6 @@ object MobileTypeSingle2Hook : BaseHook() {
         showNameFlowProxy.syncFromBroadcast(slot0SubId)
         inOutVisibleProxy.syncFromBroadcast(slot0SubId)
         inOutResIdProxy.syncFromBroadcast(slot0SubId)
-        if (isMoreAndroidVersion(37) && !hideIndicator) {
-            outerActivityVisible.syncActive()
-            outerActivityResId.syncActive()
-        }
         mobileTypeSingleVisibleProxy.syncFromBroadcast(slot0SubId)
         mobileTypeVisibleProxy.syncFromBroadcast(slot0SubId)
     }
@@ -924,47 +817,6 @@ object MobileTypeSingle2Hook : BaseHook() {
             smallVisible = resolvedSmallVisible,
             showName = renderState.showName
         )
-        if (isEnableDouble && !hideIndicator && SubscriptionManager.getSlotIndex(viewSubId) == 0) {
-            Sim2ActivityTrace.log(
-                "nativeView visibility=${inOutView?.visibility ?: -1} shown=${inOutView?.isShown ?: false} drawable=${inOutView?.drawable != null} parentVisibility=${rootView.visibility} targetSlot=${SubscriptionManager.getSlotIndex(targetSubId)}",
-                0,
-                inOutView,
-                renderState.inOutVisible
-            )
-
-            // Read-only snapshot from the view path already confirmed active on device.
-            // This also works when the startup-time binder callback was missed in logcat.
-            val boundViewModel = runCatching {
-                rootView.getAdditionalInstanceFieldAs<Any?>(LAST_BOUND_VIEW_MODEL_KEY)
-            }.getOrNull()
-            val originalInteractor = boundViewModel?.let { vm ->
-                runCatching { vm.getAdditionalInstanceFieldAs<Any?>("interactor") }.getOrNull()
-            }
-            val visibleFlow = boundViewModel?.let { vm ->
-                runCatching { vm.getObjectField("inOutVisible") }.getOrNull()
-            }
-            val resourceFlow = boundViewModel?.let { vm ->
-                runCatching { vm.getObjectField("inOutResId") }.getOrNull()
-            }
-            Sim2ActivityTrace.log(
-                "nativeSnapshot vmPresent=${boundViewModel != null} interactorPresent=${originalInteractor != null} visibleField=${visibleFlow != null} resourceField=${resourceFlow != null}",
-                0,
-                boundViewModel,
-                null
-            )
-            Sim2ActivityTrace.log(
-                "nativeVisibleFlow",
-                0,
-                visibleFlow,
-                runCatching { getStateFlowValue(visibleFlow) }.getOrNull()
-            )
-            Sim2ActivityTrace.log(
-                "nativeResourceFlow",
-                0,
-                resourceFlow,
-                runCatching { getStateFlowValue(resourceFlow) }.getOrNull()
-            )
-        }
     }
 
     private fun updateMobileTypeDrawable(imageView: ImageView, showName: String) {
