@@ -48,6 +48,8 @@ class DataSimFlowProxy(
     private val defaultValue: Any,
     private val keepProxyIdentity: Boolean = false,
     private val debugLabel: String? = null,
+    private val debugSnapshot: (() -> String)? = null,
+    private val onForwarded: (() -> Unit)? = null,
 ) {
     private val eventLimits = ConcurrentHashMap<String, AtomicInteger>()
     private val lastEvents = ConcurrentHashMap<String, String>()
@@ -66,9 +68,10 @@ class DataSimFlowProxy(
         // Keep state transitions, not every repeated SystemUI repaint.
         if (lastEvents.put(key, safeValue) == safeValue) return
         if (eventLimits.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet() > 60) return
+        val snapshot = runCatching { debugSnapshot?.invoke() }.getOrNull()
         android.util.Log.i(
             "HC-SIM2-DIAG",
-            "stage=$stage flow=$label slot=$slot dataSlot=$defaultSlot value=$safeValue"
+            "stage=$stage flow=$label slot=$slot dataSlot=$defaultSlot value=$safeValue${snapshot?.let { " $it" } ?: ""}"
         )
     }
     @Volatile
@@ -125,6 +128,7 @@ class DataSimFlowProxy(
                 ) {
                     setStateFlowValue(p, value)
                     trace("forwarded", slotIndex, value)
+                    onForwarded?.invoke()
                 }
             })
         } else {
@@ -136,6 +140,7 @@ class DataSimFlowProxy(
                     proxy?.let { p ->
                         setStateFlowValue(p, value)
                         trace("forwarded", slotIndex, value)
+                        onForwarded?.invoke()
                     }
                 }
             })
