@@ -38,6 +38,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Verify build input
+        run: |
+          test "${GITHUB_REPOSITORY}" = "CHS-Haple/HyperCeiler"
+          test "${GITHUB_REF_NAME}" = "fix/dual-row-sim2-data-activity"
+          git status --short
+          git rev-parse HEAD
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
