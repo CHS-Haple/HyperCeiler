@@ -90,7 +90,7 @@ object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
     private val activityBinderTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
-    private val activityViewTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val activityViewTraceCounters = ConcurrentHashMap<Int, java.util.concurrent.atomic.AtomicInteger>()
     private val previousActivityViewSnapshots = ConcurrentHashMap<Int, String>()
     @Volatile
     private var slot0OuterActivityVm: java.lang.ref.WeakReference<Any>? = null
@@ -297,10 +297,12 @@ object MobileTypeSingle2Hook : BaseHook() {
 
     private fun scheduleActivityViewSnapshot() {
         mainHandler.post {
-            if (activityViewTraceCount.incrementAndGet() > 100) return@post
             val dataSlot = runCatching {
                 SubscriptionManager.getSlotIndex(SubscriptionManager.getDefaultDataSubscriptionId())
             }.getOrDefault(-1)
+            val counter = activityViewTraceCounters.computeIfAbsent(dataSlot) {
+                java.util.concurrent.atomic.AtomicInteger()
+            }
             var found = false
             boundViews.values.forEach { views ->
                 views.forEach rootLoop@ { root ->
@@ -312,12 +314,16 @@ object MobileTypeSingle2Hook : BaseHook() {
                     val iconView = root.findViewByIdName("mobile_left_mobile_inout") as? ImageView
                     val snapshot = "stage=native-after-forward dataSlot=$dataSlot rootVisibility=${root.visibility} iconPresent=${iconView != null} iconVisibility=${iconView?.visibility ?: -1} drawable=${iconView?.drawable != null} iconTag=${iconView?.tag as? Int ?: -1} ${activityFlowSnapshot()}"
                     val key = System.identityHashCode(root)
-                    if (previousActivityViewSnapshots.put(key, snapshot) != snapshot) {
+                    if (previousActivityViewSnapshots.put(key, snapshot) != snapshot &&
+                        counter.incrementAndGet() <= 100
+                    ) {
                         android.util.Log.i("HC-SIM2-DIAG", snapshot)
                     }
                 }
             }
-            if (!found && previousActivityViewSnapshots.put(-1, "none-$dataSlot") != "none-$dataSlot") {
+            if (!found && previousActivityViewSnapshots.put(-1, "none-$dataSlot") != "none-$dataSlot" &&
+                counter.incrementAndGet() <= 100
+            ) {
                 android.util.Log.i("HC-SIM2-DIAG", "stage=native-after-forward dataSlot=$dataSlot boundSlot0=false")
             }
         }
