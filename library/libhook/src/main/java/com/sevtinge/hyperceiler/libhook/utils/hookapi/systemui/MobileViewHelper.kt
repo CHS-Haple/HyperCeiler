@@ -54,9 +54,13 @@ internal object Sim2ActivityTrace {
 
     fun log(stage: String, slotIndex: Int, flow: Any?, value: Any?) {
         runCatching {
-            val dataSlot = SubscriptionManager.getSlotIndex(
-                SubscriptionManager.getDefaultDataSubscriptionId()
-            )
+            // Telephony may not be ready while SystemUI hooks initialize.
+            // Failure to resolve the active slot must not suppress the diagnostic itself.
+            val dataSlot = runCatching {
+                SubscriptionManager.getSlotIndex(
+                    SubscriptionManager.getDefaultDataSubscriptionId()
+                )
+            }.getOrDefault(-1)
             val safeValue = when (value) {
                 null -> "null"
                 is Boolean, is Int -> value.toString()
