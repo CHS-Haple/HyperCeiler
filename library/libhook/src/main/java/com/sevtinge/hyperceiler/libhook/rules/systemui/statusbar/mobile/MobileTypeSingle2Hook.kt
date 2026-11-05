@@ -89,10 +89,11 @@ import java.util.function.Consumer
 object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
+    private val activityBinderTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(false, keepProxyIdentity = true)
-    private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true)
+    private val inOutVisibleProxy = DataSimFlowProxy(false, keepProxyIdentity = true, debugLabel = "visible")
+    private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true, debugLabel = "resource")
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
@@ -192,6 +193,26 @@ object MobileTypeSingle2Hook : BaseHook() {
                         // ViewModel changes retain their original after-bind timing.
                         runCatching { prepareOs4ActivityBeforeBind(chain.args.getOrNull(2)) }
                             .onFailure { XposedLog.w(TAG, lpparam.packageName, "Activity pre-bind failed: ${it.message}") }
+                    }
+                    if (isEnableDouble && !hideIndicator &&
+                        activityBinderTraceCount.incrementAndGet() <= 40
+                    ) {
+                        val vmImpl = chain.args.getOrNull(2)
+                        val outerResource = runCatching {
+                            vmImpl?.getObjectField("inOutResId")
+                        }.getOrNull()
+                        val outerValue = runCatching {
+                            getStateFlowValue(outerResource)
+                        }.getOrNull()
+                        val subId = runCatching {
+                            vmImpl?.getObjectFieldAs<Any>("iconInteractor")
+                                ?.getObjectFieldAs<Int>("subId")
+                        }.getOrNull()
+                        val slot = subId?.let(SubscriptionManager::getSlotIndex) ?: -1
+                        android.util.Log.i(
+                            "HC-SIM2-DIAG",
+                            "stage=binder-ready slot=$slot resProxy=${outerResource === inOutResIdProxy.proxy} resValue=${outerValue as? Int ?: -1}"
+                        )
                     }
                     val result = chain.proceed() // Native bind must run exactly once.
                     runCatching { applyOs4ViewModelAfterBind(chain.args.getOrNull(2)) }
