@@ -89,21 +89,9 @@ import java.util.function.Consumer
 object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
-    private val activityBinderTraceCount = java.util.concurrent.atomic.AtomicInteger(0)
-    private val activityViewTraceCounters = ConcurrentHashMap<Int, java.util.concurrent.atomic.AtomicInteger>()
-    private val previousActivityViewSnapshots = ConcurrentHashMap<Int, String>()
-    @Volatile
-    private var slot0OuterActivityVm: java.lang.ref.WeakReference<Any>? = null
-
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(
-        false,
-        keepProxyIdentity = true,
-        debugLabel = "visible",
-        debugSnapshot = ::activityFlowSnapshot,
-        onForwarded = ::scheduleActivityViewSnapshot
-    )
-    private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true, debugLabel = "resource")
+    private val inOutVisibleProxy = DataSimFlowProxy(false, keepProxyIdentity = true)
+    private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true)
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
@@ -178,18 +166,8 @@ object MobileTypeSingle2Hook : BaseHook() {
                         val outerVm = runCatching {
                             param.result?.callMethodOrNull("getThird")
                         }.getOrNull()
-                        val slot = (param.args.getOrNull(0) as? Int)
-                            ?.let(SubscriptionManager::getSlotIndex) ?: -1
-                        android.util.Log.i(
-                            "HC-SIM2-DIAG",
-                            "stage=factory slot=$slot outerPresent=${outerVm != null}"
-                        )
                         runCatching { prepareOs4ActivityBeforeBind(outerVm) }
                             .onFailure {
-                                android.util.Log.w(
-                                    "HC-SIM2-DIAG",
-                                    "stage=factory-error slot=$slot type=${it.javaClass.simpleName}"
-                                )
                                 XposedLog.w(TAG, lpparam.packageName, "Activity factory preparation failed: ${it.message}")
                             }
                     }
@@ -203,26 +181,6 @@ object MobileTypeSingle2Hook : BaseHook() {
                         // ViewModel changes retain their original after-bind timing.
                         runCatching { prepareOs4ActivityBeforeBind(chain.args.getOrNull(2)) }
                             .onFailure { XposedLog.w(TAG, lpparam.packageName, "Activity pre-bind failed: ${it.message}") }
-                    }
-                    if (isEnableDouble && !hideIndicator &&
-                        activityBinderTraceCount.incrementAndGet() <= 40
-                    ) {
-                        val vmImpl = chain.args.getOrNull(2)
-                        val outerResource = runCatching {
-                            vmImpl?.getObjectField("inOutResId")
-                        }.getOrNull()
-                        val outerValue = runCatching {
-                            getStateFlowValue(outerResource)
-                        }.getOrNull()
-                        val subId = runCatching {
-                            vmImpl?.getObjectFieldAs<Any>("iconInteractor")
-                                ?.getObjectFieldAs<Int>("subId")
-                        }.getOrNull()
-                        val slot = subId?.let(SubscriptionManager::getSlotIndex) ?: -1
-                        android.util.Log.i(
-                            "HC-SIM2-DIAG",
-                            "stage=binder-ready slot=$slot resProxy=${outerResource === inOutResIdProxy.proxy} resValue=${outerValue as? Int ?: -1}"
-                        )
                     }
                     val result = chain.proceed() // Native bind must run exactly once.
                     runCatching { applyOs4ViewModelAfterBind(chain.args.getOrNull(2)) }
@@ -282,53 +240,6 @@ object MobileTypeSingle2Hook : BaseHook() {
         }
     }
 
-    private fun activityFlowSnapshot(): String {
-        val activeId = runCatching { SubscriptionManager.getDefaultDataSubscriptionId() }.getOrDefault(-1)
-        val resourceSource = inOutResIdProxy.originalFlows[activeId]
-        val sourceResourceId = runCatching { getStateFlowValue(resourceSource) as? Int }.getOrNull()
-        val proxyResourceId = runCatching { getStateFlowValue(inOutResIdProxy.proxy) as? Int }.getOrNull()
-        val proxyVisible = runCatching { getStateFlowValue(inOutVisibleProxy.proxy) as? Boolean }.getOrNull()
-        val outerVm = slot0OuterActivityVm?.get()
-        val outerResource = runCatching { outerVm?.getObjectField("inOutResId") }.getOrNull()
-        val outerVisibility = runCatching { outerVm?.getObjectField("isVisible") }.getOrNull()
-        val outerVisible = runCatching { getStateFlowValue(outerVisibility) as? Boolean }.getOrNull()
-        return "resRegistered=${resourceSource != null} resSource=${sourceResourceId ?: -1} resProxy=${proxyResourceId ?: -1} visibleProxy=${proxyVisible ?: false} outerResProxy=${outerResource === inOutResIdProxy.proxy} outerIsVisible=${outerVisible ?: false}"
-    }
-
-    private fun scheduleActivityViewSnapshot() {
-        mainHandler.post {
-            val dataSlot = runCatching {
-                SubscriptionManager.getSlotIndex(SubscriptionManager.getDefaultDataSubscriptionId())
-            }.getOrDefault(-1)
-            val counter = activityViewTraceCounters.computeIfAbsent(dataSlot) {
-                java.util.concurrent.atomic.AtomicInteger()
-            }
-            var found = false
-            boundViews.values.forEach { views ->
-                views.forEach rootLoop@ { root ->
-                    val slot = runCatching {
-                        SubscriptionManager.getSlotIndex(root.getIntField("subId"))
-                    }.getOrDefault(-1)
-                    if (slot != 0) return@rootLoop
-                    found = true
-                    val iconView = root.findViewByIdName("mobile_left_mobile_inout") as? ImageView
-                    val snapshot = "stage=native-after-forward dataSlot=$dataSlot rootVisibility=${root.visibility} iconPresent=${iconView != null} iconVisibility=${iconView?.visibility ?: -1} drawable=${iconView?.drawable != null} iconTag=${iconView?.tag as? Int ?: -1} ${activityFlowSnapshot()}"
-                    val key = System.identityHashCode(root)
-                    if (previousActivityViewSnapshots.put(key, snapshot) != snapshot &&
-                        counter.incrementAndGet() <= 100
-                    ) {
-                        android.util.Log.i("HC-SIM2-DIAG", snapshot)
-                    }
-                }
-            }
-            if (!found && previousActivityViewSnapshots.put(-1, "none-$dataSlot") != "none-$dataSlot" &&
-                counter.incrementAndGet() <= 100
-            ) {
-                android.util.Log.i("HC-SIM2-DIAG", "stage=native-after-forward dataSlot=$dataSlot boundSlot0=false")
-            }
-        }
-    }
-
     /**
      * Exact SystemUI 17.03.260226.r DEX: MobileIconsViewModel.createViewModel
      * captures the inner inOutResId into the OUTER MiuiMobileIconVMImpl
@@ -361,7 +272,6 @@ object MobileTypeSingle2Hook : BaseHook() {
         }.getOrNull() ?: return
         val slot = SubscriptionManager.getSlotIndex(subId)
         if (slot < 0) return
-        if (slot == 0) slot0OuterActivityVm = java.lang.ref.WeakReference(vmImpl)
 
         // Verify the actual Flow identity, not a flag left on a ViewModel
         // from an earlier LSPosed hot-reload generation.
