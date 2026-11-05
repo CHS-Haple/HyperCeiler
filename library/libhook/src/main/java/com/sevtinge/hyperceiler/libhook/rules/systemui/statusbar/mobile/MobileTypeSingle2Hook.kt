@@ -843,6 +843,39 @@ object MobileTypeSingle2Hook : BaseHook() {
                 inOutView,
                 renderState.inOutVisible
             )
+
+            // Read-only snapshot from the view path already confirmed active on device.
+            // This also works when the startup-time binder callback was missed in logcat.
+            val boundViewModel = runCatching {
+                rootView.getAdditionalInstanceFieldAs<Any?>(LAST_BOUND_VIEW_MODEL_KEY)
+            }.getOrNull()
+            val originalInteractor = boundViewModel?.let { vm ->
+                runCatching { vm.getAdditionalInstanceFieldAs<Any?>("interactor") }.getOrNull()
+            }
+            val visibleFlow = boundViewModel?.let { vm ->
+                runCatching { vm.getObjectField("inOutVisible") }.getOrNull()
+            }
+            val resourceFlow = boundViewModel?.let { vm ->
+                runCatching { vm.getObjectField("inOutResId") }.getOrNull()
+            }
+            Sim2ActivityTrace.log(
+                "nativeSnapshot vmPresent=${boundViewModel != null} interactorPresent=${originalInteractor != null} visibleField=${visibleFlow != null} resourceField=${resourceFlow != null}",
+                0,
+                boundViewModel,
+                null
+            )
+            Sim2ActivityTrace.log(
+                "nativeVisibleFlow",
+                0,
+                visibleFlow,
+                runCatching { getStateFlowValue(visibleFlow) }.getOrNull()
+            )
+            Sim2ActivityTrace.log(
+                "nativeResourceFlow",
+                0,
+                resourceFlow,
+                runCatching { getStateFlowValue(resourceFlow) }.getOrNull()
+            )
         }
     }
 
