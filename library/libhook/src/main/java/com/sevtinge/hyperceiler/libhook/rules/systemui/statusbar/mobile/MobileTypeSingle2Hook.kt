@@ -136,6 +136,11 @@ object MobileTypeSingle2Hook : BaseHook() {
     private val refreshBoundViewsRunnable = Runnable { refreshBoundViewsNow() }
 
     override fun init() {
+        // Diagnostic only: record which Android binding branch was installed.
+        Sim2ActivityTrace.log(
+            "hook.init sdk=${android.os.Build.VERSION.SDK_INT} modern=${isMoreAndroidVersion(37)} double=$isEnableDouble hide=$hideIndicator",
+            -1, null, null
+        )
         BaseHook.registerHandlerHotReloadCleanup(mainHandler)
         if (isEnableDouble) {
             getHotReloadRuntimeState(DATA_SIM_CONTEXT_KEY, Context::class.java)
@@ -159,6 +164,10 @@ object MobileTypeSingle2Hook : BaseHook() {
         if (isMoreAndroidVersion(37)) {
             // OS4: MiuiCellularIconVM 无参构造，字段在 bind 时才就绪；
             // binder 的 args[2] 即 MiuiMobileIconVMImpl，直接取其 cellProvider 与 interactor
+            Sim2ActivityTrace.log(
+                "binder hookRegister methods=${miuiMobileIconBinder.declaredMethods.count { it.name == "bind" }}",
+                -1, null, null
+            )
             miuiMobileIconBinder.findMethod { name("bind") }
                 .createAfterHook { param ->
                     // Diagnostic only: distinguish a missed bind hook from early returns.
@@ -226,9 +235,28 @@ object MobileTypeSingle2Hook : BaseHook() {
             .forEach { method ->
                 method.createInterceptHook { chain ->
                     val result = chain.proceed()
-                    val rootView = result as? ViewGroup ?: return@createInterceptHook result
+                    val rootView = result as? ViewGroup
+                    if (rootView == null) {
+                        Sim2ActivityTrace.log("host resultView=false", -1, result, null)
+                        return@createInterceptHook result
+                    }
+                    val viewSubId = runCatching { rootView.getIntField("subId") }.getOrDefault(-1)
+                    val slotIndex = runCatching { SubscriptionManager.getSlotIndex(viewSubId) }.getOrDefault(-1)
                     val viewModel = resolveConstructAndBindViewModel(chain.args.toList())
-                        ?: return@createInterceptHook result
+                    Sim2ActivityTrace.log(
+                        "host vmPresent=${viewModel != null} args=${chain.args.size}",
+                        slotIndex, rootView, null
+                    )
+                    if (viewModel == null) return@createInterceptHook result
+                    val visibleField = runCatching { viewModel.getObjectField("inOutVisible") }.getOrNull()
+                    val resourceField = runCatching { viewModel.getObjectField("inOutResId") }.getOrNull()
+                    val storedInteractor = runCatching {
+                        viewModel.getAdditionalInstanceFieldAs<Any?>("interactor")
+                    }.getOrNull()
+                    Sim2ActivityTrace.log(
+                        "host fields visible=${visibleField != null} resource=${resourceField != null} interactor=${storedInteractor != null}",
+                        slotIndex, viewModel, null
+                    )
                     bindConstructedMobileViewIfNeeded(rootView, viewModel)
                     result
                 }
