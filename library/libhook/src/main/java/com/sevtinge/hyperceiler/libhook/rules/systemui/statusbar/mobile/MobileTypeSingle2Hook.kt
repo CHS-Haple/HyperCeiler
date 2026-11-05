@@ -89,7 +89,6 @@ import java.util.function.Consumer
 object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
-    private const val ACTIVITY_PREBOUND_KEY = "mobile_type_single2_activity_prebound"
 
     private val showNameFlowProxy = DataSimFlowProxy("")
     private val inOutVisibleProxy = DataSimFlowProxy(false)
@@ -157,8 +156,8 @@ object MobileTypeSingle2Hook : BaseHook() {
         }
 
         if (isMoreAndroidVersion(37)) {
-            // OS4: MiuiCellularIconVM 无参构造，字段在 bind 时才就绪；
-            // binder 的 args[2] 即 MiuiMobileIconVMImpl，直接取其 cellProvider 与 interactor
+            // OS4: 工厂先构建外层 MiuiMobileIconVMImpl，再调用原生 bind。
+            // bind 前仅处理活动 Flow，其他 ViewModel 状态沿用 bind 后处理。
             miuiMobileIconBinder.findMethod { name("bind") }
                 .createInterceptHook { chain ->
                     if (isEnableDouble && !hideIndicator) {
@@ -232,6 +231,18 @@ object MobileTypeSingle2Hook : BaseHook() {
      * and resolves the provider at collection time. Prepare only the two
      * activity proxies before native bind; leave all unrelated hooks unchanged.
      */
+    private fun isActivityAlreadyPrepared(viewModel: Any, subId: Int, slot: Int): Boolean {
+        val visibleSource = inOutVisibleProxy.originalFlows[subId] ?: return false
+        val resourceSource = inOutResIdProxy.originalFlows[subId] ?: return false
+        val visibleNow = viewModel.getObjectField("inOutVisible") ?: return false
+        val resourceNow = viewModel.getObjectField("inOutResId") ?: return false
+        return if (slot == 0) {
+            visibleNow === inOutVisibleProxy.proxy && resourceNow === inOutResIdProxy.proxy
+        } else {
+            visibleNow === visibleSource && resourceNow === resourceSource
+        }
+    }
+
     private fun prepareOs4ActivityBeforeBind(vmImpl: Any?) {
         if (vmImpl == null) return
         val viewModel = runCatching {
@@ -246,9 +257,9 @@ object MobileTypeSingle2Hook : BaseHook() {
         val slot = SubscriptionManager.getSlotIndex(subId)
         if (slot < 0) return
 
-        val alreadyPrepared = viewModel.getAdditionalInstanceFieldAs<Boolean?>(ACTIVITY_PREBOUND_KEY) == true
-        if (!alreadyPrepared) {
-            // Fail native when this exact VM does not expose both expected flows.
+        // Verify the actual Flow identity, not a flag left on a ViewModel
+        // from an earlier LSPosed hot-reload generation.
+        if (!isActivityAlreadyPrepared(viewModel, subId, slot)) {
             val visible = viewModel.getObjectField("inOutVisible") ?: return
             val resource = viewModel.getObjectField("inOutResId") ?: return
             inOutVisibleProxy.setupForSlot(slot, subId, visible, MobileViewHelper::isSingleSimMode)
@@ -257,12 +268,11 @@ object MobileTypeSingle2Hook : BaseHook() {
                 viewModel.setObjectField("inOutVisible", inOutVisibleProxy.proxy!!)
                 viewModel.setObjectField("inOutResId", inOutResIdProxy.proxy!!)
             }
-            viewModel.setAdditionalInstanceField(ACTIVITY_PREBOUND_KEY, true)
         }
 
         if (slot == 0) {
-            // The outer resource field is Flow-typed, verified against the
-            // exact DEX. It otherwise keeps the stale pre-proxy reference.
+            // Native factory already cached inOutResId in the OUTER VM.
+            // Repoint this Flow-typed field before the binder subscribes.
             inOutResIdProxy.proxy?.let { proxy ->
                 if (vmImpl.getObjectField("inOutResId") !== proxy) {
                     vmImpl.setObjectField("inOutResId", proxy)
@@ -304,7 +314,7 @@ object MobileTypeSingle2Hook : BaseHook() {
                     viewModel.setObjectField("showName", showNameFlowProxy.proxy!!)
                 }
             }
-            if (!hideIndicator && viewModel.getAdditionalInstanceFieldAs<Boolean?>(ACTIVITY_PREBOUND_KEY) != true) {
+            if (!hideIndicator && !(isMoreAndroidVersion(37) && isActivityAlreadyPrepared(viewModel, subId, slotIndex))) {
                 viewModel.getObjectField("inOutVisible")?.let { originalFlow ->
                     inOutVisibleProxy.setupForSlot(
                         slotIndex,
