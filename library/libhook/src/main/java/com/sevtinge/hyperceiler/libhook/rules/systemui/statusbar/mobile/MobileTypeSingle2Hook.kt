@@ -89,6 +89,7 @@ import java.util.function.Consumer
 object MobileTypeSingle2Hook : BaseHook() {
     private const val LAST_BOUND_VIEW_MODEL_KEY = "mobile_type_single2_last_bound_vm"
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
+    private const val ACTIVITY_PREBOUND_KEY = "mobile_type_single2_activity_prebound"
 
     private val showNameFlowProxy = DataSimFlowProxy("")
     private val inOutVisibleProxy = DataSimFlowProxy(false)
@@ -160,20 +161,15 @@ object MobileTypeSingle2Hook : BaseHook() {
             // binder 的 args[2] 即 MiuiMobileIconVMImpl，直接取其 cellProvider 与 interactor
             miuiMobileIconBinder.findMethod { name("bind") }
                 .createInterceptHook { chain ->
-                    // In dual-row mode the native binder must see activity proxies
-                    // before it starts collecting the outer ViewModel flows.
-                    if (isEnableDouble) {
-                        runCatching { prepareOs4BoundViewModel(chain.args.getOrNull(2)) }
-                            .onFailure { XposedLog.w(TAG, lpparam.packageName, "SIM2 pre-bind setup failed: ${it.message}") }
+                    if (isEnableDouble && !hideIndicator) {
+                        // Only activity needs pre-bind preparation. The other
+                        // ViewModel changes retain their original after-bind timing.
+                        runCatching { prepareOs4ActivityBeforeBind(chain.args.getOrNull(2)) }
+                            .onFailure { XposedLog.w(TAG, lpparam.packageName, "Activity pre-bind failed: ${it.message}") }
                     }
-
-                    val result = chain.proceed() // Exactly once; never replay native bind.
-
-                    // Preserve the original timing for non-dual-row configurations.
-                    if (!isEnableDouble) {
-                        runCatching { prepareOs4BoundViewModel(chain.args.getOrNull(2)) }
-                            .onFailure { XposedLog.w(TAG, lpparam.packageName, "OS4 post-bind setup failed: ${it.message}") }
-                    }
+                    val result = chain.proceed() // Native bind must run exactly once.
+                    runCatching { applyOs4ViewModelAfterBind(chain.args.getOrNull(2)) }
+                        .onFailure { XposedLog.w(TAG, lpparam.packageName, "OS4 post-bind failed: ${it.message}") }
                     result
                 }
         } else {
@@ -230,12 +226,52 @@ object MobileTypeSingle2Hook : BaseHook() {
     }
 
     /**
-     * The exact HyperOS 4 (17.03.260226.r) native ViewModel factory captures
-     * MiuiCellularIconVM.inOutResId in MiuiMobileIconVMImpl.inOutResId
-     * before MiuiMobileIconBinder.bind() is called. Therefore replacing only
-     * the inner field after bind cannot affect the native resource collector.
+     * Exact SystemUI 17.03.260226.r DEX: MobileIconsViewModel.createViewModel
+     * captures the inner inOutResId into the OUTER MiuiMobileIconVMImpl
+     * before MiuiMobileIconBinder.bind(). Its inOutVisible is transformLatest
+     * and resolves the provider at collection time. Prepare only the two
+     * activity proxies before native bind; leave all unrelated hooks unchanged.
      */
-    private fun prepareOs4BoundViewModel(vmImpl: Any?) {
+    private fun prepareOs4ActivityBeforeBind(vmImpl: Any?) {
+        if (vmImpl == null) return
+        val viewModel = runCatching {
+            vmImpl.callMethodAs<Any>("getCellProvider")
+        }.getOrNull() ?: return
+        val interactor = runCatching {
+            vmImpl.getObjectFieldAs<Any>("iconInteractor")
+        }.getOrNull() ?: return
+        val subId = runCatching {
+            interactor.getObjectFieldAs<Int>("subId")
+        }.getOrNull() ?: return
+        val slot = SubscriptionManager.getSlotIndex(subId)
+        if (slot < 0) return
+
+        val alreadyPrepared = viewModel.getAdditionalInstanceFieldAs<Boolean?>(ACTIVITY_PREBOUND_KEY) == true
+        if (!alreadyPrepared) {
+            // Fail native when this exact VM does not expose both expected flows.
+            val visible = viewModel.getObjectField("inOutVisible") ?: return
+            val resource = viewModel.getObjectField("inOutResId") ?: return
+            inOutVisibleProxy.setupForSlot(slot, subId, visible, MobileViewHelper::isSingleSimMode)
+            inOutResIdProxy.setupForSlot(slot, subId, resource, MobileViewHelper::isSingleSimMode)
+            if (slot == 0) {
+                viewModel.setObjectField("inOutVisible", inOutVisibleProxy.proxy!!)
+                viewModel.setObjectField("inOutResId", inOutResIdProxy.proxy!!)
+            }
+            viewModel.setAdditionalInstanceField(ACTIVITY_PREBOUND_KEY, true)
+        }
+
+        if (slot == 0) {
+            // The outer resource field is Flow-typed, verified against the
+            // exact DEX. It otherwise keeps the stale pre-proxy reference.
+            inOutResIdProxy.proxy?.let { proxy ->
+                if (vmImpl.getObjectField("inOutResId") !== proxy) {
+                    vmImpl.setObjectField("inOutResId", proxy)
+                }
+            }
+        }
+    }
+
+    private fun applyOs4ViewModelAfterBind(vmImpl: Any?) {
         if (vmImpl == null) return
         val viewModel = runCatching {
             vmImpl.callMethodAs<Any>("getCellProvider")
@@ -247,27 +283,10 @@ object MobileTypeSingle2Hook : BaseHook() {
             interactor.getObjectFieldAs<Int>("subId")
         }.getOrNull() ?: return
 
-        // Bind may run again for the same provider; do not register duplicate
-        // upstream collectors. Still verify the outer resource binding below.
-        if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") !== interactor) {
-            viewModel.setObjectField("wifiAvailable", interactor.getObjectField("wifiAvailable"))
-            applyViewModelState(viewModel, interactor, subId)
-            viewModel.setAdditionalInstanceField("interactor", interactor)
-        }
-
-        if (isEnableDouble && !hideIndicator &&
-            SubscriptionManager.getSlotIndex(subId) == 0
-        ) {
-            // The outer field is declared as Flow (not ReadonlyStateFlow).
-            // Write the proxy before native bind reads getInOutResId().
-            // The outer inOutVisible transformLatest instead resolves the
-            // inner provider Flow when collected, after this pre-bind setup.
-            inOutResIdProxy.proxy?.let { activityResFlow ->
-                if (vmImpl.getObjectField("inOutResId") !== activityResFlow) {
-                    vmImpl.setObjectField("inOutResId", activityResFlow)
-                }
-            }
-        }
+        if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor) return
+        viewModel.setAdditionalInstanceField("interactor", interactor)
+        viewModel.setObjectField("wifiAvailable", interactor.getObjectField("wifiAvailable"))
+        applyViewModelState(viewModel, interactor, subId)
     }
 
     @SuppressLint("MissingPermission")
@@ -285,7 +304,7 @@ object MobileTypeSingle2Hook : BaseHook() {
                     viewModel.setObjectField("showName", showNameFlowProxy.proxy!!)
                 }
             }
-            if (!hideIndicator) {
+            if (!hideIndicator && viewModel.getAdditionalInstanceFieldAs<Boolean?>(ACTIVITY_PREBOUND_KEY) != true) {
                 viewModel.getObjectField("inOutVisible")?.let { originalFlow ->
                     inOutVisibleProxy.setupForSlot(
                         slotIndex,
