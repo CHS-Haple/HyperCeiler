@@ -161,21 +161,36 @@ object MobileTypeSingle2Hook : BaseHook() {
             // binder 的 args[2] 即 MiuiMobileIconVMImpl，直接取其 cellProvider 与 interactor
             miuiMobileIconBinder.findMethod { name("bind") }
                 .createAfterHook { param ->
-                    val vmImpl = param.args[2] ?: return@createAfterHook
+                    // Diagnostic only: distinguish a missed bind hook from early returns.
+                    // No subscription IDs or operator names are logged.
+                    Sim2ActivityTrace.log("binder entered", -1, param.thisObject, param.args.size)
+                    val vmImpl = param.args.getOrNull(2)
+                    Sim2ActivityTrace.log("binder vmImplPresent=${vmImpl != null}", -1, vmImpl, null)
+                    if (vmImpl == null) return@createAfterHook
+
                     val viewModel = runCatching {
                         vmImpl.callMethodAs<Any>("getCellProvider")
-                    }.getOrNull() ?: return@createAfterHook
+                    }.getOrNull()
+                    Sim2ActivityTrace.log("binder cellProviderPresent=${viewModel != null}", -1, viewModel, null)
+                    if (viewModel == null) return@createAfterHook
+
                     val interactor = runCatching {
                         vmImpl.getObjectFieldAs<Any>("iconInteractor")
-                    }.getOrNull() ?: return@createAfterHook
+                    }.getOrNull()
+                    Sim2ActivityTrace.log("binder interactorPresent=${interactor != null}", -1, interactor, null)
+                    if (interactor == null) return@createAfterHook
+
                     val subId = runCatching {
                         interactor.getObjectFieldAs<Int>("subId")
-                    }.getOrNull() ?: return@createAfterHook
+                    }.getOrNull()
+                    val slotIndex = subId?.let { SubscriptionManager.getSlotIndex(it) } ?: -1
+                    Sim2ActivityTrace.log("binder subIdPresent=${subId != null}", slotIndex, viewModel, null)
+                    if (subId == null) return@createAfterHook
 
                     // bind 会对同一 VM 多次调用，已处理过则跳过
-                    if (viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor) {
-                        return@createAfterHook
-                    }
+                    val alreadyBound = viewModel.getAdditionalInstanceFieldAs<Any?>("interactor") === interactor
+                    Sim2ActivityTrace.log("binder alreadyBound=$alreadyBound", slotIndex, viewModel, null)
+                    if (alreadyBound) return@createAfterHook
                     viewModel.setAdditionalInstanceField("interactor", interactor)
                     viewModel.setObjectField(
                         "wifiAvailable",
@@ -239,6 +254,12 @@ object MobileTypeSingle2Hook : BaseHook() {
     @SuppressLint("MissingPermission")
     private fun applyViewModelState(viewModel: Any, interactor: Any?, subId: Int) {
         val slotIndex = SubscriptionManager.getSlotIndex(subId)
+        Sim2ActivityTrace.log("vm apply double=$isEnableDouble hide=$hideIndicator", slotIndex, viewModel, null)
+        if (isEnableDouble && !hideIndicator) {
+            val visibleField = runCatching { viewModel.getObjectField("inOutVisible") }.getOrNull()
+            val resourceField = runCatching { viewModel.getObjectField("inOutResId") }.getOrNull()
+            Sim2ActivityTrace.log("vm activityFields visible=${visibleField != null} resource=${resourceField != null}", slotIndex, viewModel, null)
+        }
         if (isEnableDouble) {
             viewModel.getObjectField("showName")?.let { originalFlow ->
                 showNameFlowProxy.setupForSlot(
@@ -308,6 +329,7 @@ object MobileTypeSingle2Hook : BaseHook() {
             subId,
             slotIndex
         )
+        Sim2ActivityTrace.log("vm collectorsAttached", slotIndex, viewModel, null)
 
         if (isEnableDouble) {
             syncDataSimProxiesNow()
@@ -788,7 +810,7 @@ object MobileTypeSingle2Hook : BaseHook() {
         )
         if (isEnableDouble && !hideIndicator && SubscriptionManager.getSlotIndex(viewSubId) == 0) {
             Sim2ActivityTrace.log(
-                "nativeView visibility=${inOutView?.visibility ?: -1} shown=${inOutView?.isShown ?: false} drawable=${inOutView?.drawable != null}",
+                "nativeView visibility=${inOutView?.visibility ?: -1} shown=${inOutView?.isShown ?: false} drawable=${inOutView?.drawable != null} parentVisibility=${rootView.visibility} targetSlot=${SubscriptionManager.getSlotIndex(targetSubId)}",
                 0,
                 inOutView,
                 renderState.inOutVisible
