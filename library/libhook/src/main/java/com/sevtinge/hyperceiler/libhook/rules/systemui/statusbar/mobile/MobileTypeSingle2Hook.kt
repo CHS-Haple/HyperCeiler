@@ -91,8 +91,8 @@ object MobileTypeSingle2Hook : BaseHook() {
     private const val DATA_SIM_CONTEXT_KEY = "MobileTypeSingle2Hook.dataSimContext"
 
     private val showNameFlowProxy = DataSimFlowProxy("")
-    private val inOutVisibleProxy = DataSimFlowProxy(false)
-    private val inOutResIdProxy = DataSimFlowProxy(0)
+    private val inOutVisibleProxy = DataSimFlowProxy(false, keepProxyIdentity = true)
+    private val inOutResIdProxy = DataSimFlowProxy(0, keepProxyIdentity = true)
     private val mobileTypeSingleVisibleProxy = DataSimFlowProxy(false)
     private val mobileTypeVisibleProxy = DataSimFlowProxy(false)
 
