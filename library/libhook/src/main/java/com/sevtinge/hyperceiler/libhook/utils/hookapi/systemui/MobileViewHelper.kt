@@ -43,7 +43,10 @@ import java.util.function.Consumer
  * 始终反映当前上网卡对应的原始 Flow 值，用于双排信号模式下
  * slot 0 代理显示当前上网卡的属性（如 showName、isDataConnected）。
  */
-class DataSimFlowProxy(private val defaultValue: Any) {
+class DataSimFlowProxy(
+    private val defaultValue: Any,
+    private val keepProxyIdentity: Boolean = false,
+) {
     @Volatile
     var proxy: Any? = null
         private set
@@ -68,8 +71,17 @@ class DataSimFlowProxy(private val defaultValue: Any) {
             } else {
                 originalFlows[defaultDataSubId]?.let { getStateFlowValue(it) } ?: defaultValue
             }
-            val p = newReadonlyStateFlow(initValue)
-            proxy = p
+            // Native mobile binders can subscribe to the same slot-0 activity
+            // from multiple status-bar hosts. Replacing the proxy would strand
+            // earlier collectors on a stale Flow. This opt-in mode is used
+            // only for activity visibility and activity resource IDs.
+            val p = if (keepProxyIdentity) {
+                synchronized(this) {
+                    proxy ?: newReadonlyStateFlow(initValue).also { proxy = it }
+                }
+            } else {
+                newReadonlyStateFlow(initValue).also { proxy = it }
+            }
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
                 if (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
                     setStateFlowValue(p, value)
