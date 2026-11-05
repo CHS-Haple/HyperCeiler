@@ -83,13 +83,19 @@ class DataSimFlowProxy(
                 newReadonlyStateFlow(initValue).also { proxy = it }
             }
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                if (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
+                // When a subscription is rebound to another ViewModel, only
+                // its newest upstream Flow may drive the shared activity proxy.
+                if ((!keepProxyIdentity || originalFlows[subId] === originalFlow) &&
+                    (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId())
+                ) {
                     setStateFlowValue(p, value)
                 }
             })
         } else {
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                if (subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
+                if ((!keepProxyIdentity || originalFlows[subId] === originalFlow) &&
+                    subId == SubscriptionManager.getDefaultDataSubscriptionId()
+                ) {
                     proxy?.let { p -> setStateFlowValue(p, value) }
                 }
             })
