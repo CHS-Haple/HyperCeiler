@@ -303,11 +303,11 @@ object MobileTypeSingle2Hook : BaseHook() {
             }.getOrDefault(-1)
             var found = false
             boundViews.values.forEach { views ->
-                views.forEach { root ->
+                views.forEach rootLoop@ { root ->
                     val slot = runCatching {
                         SubscriptionManager.getSlotIndex(root.getIntField("subId"))
                     }.getOrDefault(-1)
-                    if (slot != 0) return@forEach
+                    if (slot != 0) return@rootLoop
                     found = true
                     val iconView = root.findViewByIdName("mobile_left_mobile_inout") as? ImageView
                     val snapshot = "stage=native-after-forward dataSlot=$dataSlot rootVisibility=${root.visibility} iconPresent=${iconView != null} iconVisibility=${iconView?.visibility ?: -1} drawable=${iconView?.drawable != null} iconTag=${iconView?.tag as? Int ?: -1} ${activityFlowSnapshot()}"
