@@ -36,6 +36,7 @@ import io.github.lingqiqi5211.ezhooktool.xposed.dsl.getObjectFieldAs
 import io.github.lingqiqi5211.ezhooktool.core.loadClass
 import io.github.lingqiqi5211.ezhooktool.xposed.EzXposed
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Consumer
 
 /**
@@ -43,7 +44,34 @@ import java.util.function.Consumer
  * 始终反映当前上网卡对应的原始 Flow 值，用于双排信号模式下
  * slot 0 代理显示当前上网卡的属性（如 showName、isDataConnected）。
  */
-class DataSimFlowProxy(private val defaultValue: Any) {
+internal object Sim2ActivityTrace {
+    private const val TAG = "HC-SIM2-DIAG"
+    private val emitted = AtomicInteger(0)
+    private const val MAX_EVENTS = 240
+
+    fun log(stage: String, slotIndex: Int, flow: Any?, value: Any?) {
+        if (emitted.incrementAndGet() > MAX_EVENTS) return
+        runCatching {
+            val dataSlot = SubscriptionManager.getSlotIndex(
+                SubscriptionManager.getDefaultDataSubscriptionId()
+            )
+            val safeValue = when (value) {
+                null -> "null"
+                is Boolean, is Int -> value.toString()
+                else -> "other"
+            }
+            android.util.Log.i(
+                TAG,
+                "stage=$stage slot=$slotIndex dataSlot=$dataSlot flowId=${flow?.let(System::identityHashCode) ?: 0} value=$safeValue"
+            )
+        }
+    }
+}
+
+class DataSimFlowProxy(
+    private val defaultValue: Any,
+    private val debugLabel: String? = null,
+) {
     @Volatile
     var proxy: Any? = null
         private set
@@ -61,6 +89,14 @@ class DataSimFlowProxy(private val defaultValue: Any) {
         isSingleSimMode: () -> Boolean,
     ) {
         originalFlows[subId] = originalFlow
+        if (debugLabel != null) {
+            Sim2ActivityTrace.log(
+                "$debugLabel register self=${originalFlow === proxy}",
+                slotIndex,
+                originalFlow,
+                runCatching { getStateFlowValue(originalFlow) }.getOrNull()
+            )
+        }
         if (slotIndex == 0) {
             val defaultDataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
             val initValue = if (isSingleSimMode() || subId == defaultDataSubId) {
@@ -70,15 +106,28 @@ class DataSimFlowProxy(private val defaultValue: Any) {
             }
             val p = newReadonlyStateFlow(initValue)
             proxy = p
+            if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel proxy-created", slotIndex, p, initValue)
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                if (isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
+                val selected = isSingleSimMode() || subId == SubscriptionManager.getDefaultDataSubscriptionId()
+                if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel source selected=$selected", slotIndex, originalFlow, value)
+                if (selected) {
                     setStateFlowValue(p, value)
+                    if (debugLabel != null) {
+                        Sim2ActivityTrace.log("$debugLabel forwarded", slotIndex, p, runCatching { getStateFlowValue(p) }.getOrNull())
+                    }
                 }
             })
         } else {
             MiuiStub.javaAdapter.alwaysCollectFlow(originalFlow, Consumer<Any> { value ->
-                if (subId == SubscriptionManager.getDefaultDataSubscriptionId()) {
-                    proxy?.let { p -> setStateFlowValue(p, value) }
+                val selected = subId == SubscriptionManager.getDefaultDataSubscriptionId()
+                if (debugLabel != null) Sim2ActivityTrace.log("$debugLabel source selected=$selected", slotIndex, originalFlow, value)
+                if (selected) {
+                    proxy?.let { p ->
+                        setStateFlowValue(p, value)
+                        if (debugLabel != null) {
+                            Sim2ActivityTrace.log("$debugLabel forwarded", slotIndex, p, runCatching { getStateFlowValue(p) }.getOrNull())
+                        }
+                    }
                 }
             })
         }
@@ -88,6 +137,14 @@ class DataSimFlowProxy(private val defaultValue: Any) {
     fun syncFromBroadcast(slot0SubId: Int) {
         val activeDataSubId = SubscriptionManager.getDefaultDataSubscriptionId()
         val targetFlow = originalFlows[activeDataSubId] ?: originalFlows[slot0SubId]
+        if (debugLabel != null) {
+            Sim2ActivityTrace.log(
+                "$debugLabel broadcast selectedFlowPresent=${originalFlows.containsKey(activeDataSubId)}",
+                SubscriptionManager.getSlotIndex(activeDataSubId),
+                targetFlow,
+                runCatching { getStateFlowValue(targetFlow) }.getOrNull()
+            )
+        }
         if (targetFlow != null) {
             proxy?.let { p ->
                 setStateFlowValue(p, getStateFlowValue(targetFlow) ?: defaultValue)
