@@ -94,7 +94,7 @@ jobs:
           apks=(app/build/outputs/apk/release/*.apk)
           test "${#apks[@]}" -eq 1
           apk="${apks[0]}"
-          sdk_apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          sdk_apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort | tail -n 1)"
           test -n "$sdk_apksigner"
           "$sdk_apksigner" verify --verbose --print-certs "$apk"
           shasum -a 256 "$apk"
