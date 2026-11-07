@@ -1,9 +1,9 @@
-name: Personal SIM2 Release (Fork Only)
+name: Personal CPU Validation Release (Fork Only)
 
 on:
   push:
     branches:
-      - personal/sim2-pr1771-release
+      - personal/cpu-provider-relief
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: personal-sim2-release-${{ github.ref }}
+  group: personal-cpu-validation-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
       - name: Record immutable build input
         run: |
           test "$GITHUB_REPOSITORY" = "CHS-Haple/HyperCeiler"
-          test "$GITHUB_REF_NAME" = "personal/sim2-pr1771-release"
+          test "$GITHUB_REF_NAME" = "personal/cpu-provider-relief"
           git rev-parse HEAD
           git status --porcelain
 
@@ -111,7 +111,7 @@ jobs:
       - name: Upload personal Release APK
         uses: actions/upload-artifact@v7
         with:
-          name: HyperCeiler-SIM2-Personal-Release
+          name: HyperCeiler-CPU-Validation-Release
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14

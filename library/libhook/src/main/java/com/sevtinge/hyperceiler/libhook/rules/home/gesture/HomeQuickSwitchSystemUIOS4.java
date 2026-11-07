@@ -33,6 +33,7 @@ import java.util.WeakHashMap;
 public final class HomeQuickSwitchSystemUIOS4 extends BaseHook {
     private static final String TAG_LOG="HyperCeiler.QuickSystemUI";
     private static final Uri ROOT=Uri.parse("content://com.sevtinge.hyperceiler.provider.sharedprefs");
+    private static final Uri PREF_CHANGES=Uri.withAppendedPath(ROOT,"pref");
     private final Object guard=new Object();
     private final Map<Object,HomeQuickSwitchState> receivers=new WeakHashMap<>();
     private final Map<Object,HomeQuickSwitchState> trackers=new IdentityHashMap<>();
@@ -222,9 +223,25 @@ public final class HomeQuickSwitchSystemUIOS4 extends BaseHook {
     private synchronized void install(Context app) {
         if(closed||worker!=null||!"com.android.systemui".equals(app.getPackageName()))return;
         context=app;HandlerThread thread=new HandlerThread("HC-QuickSwitch");thread.start();worker=new Handler(thread.getLooper());
-        ContentObserver observer=new ContentObserver(worker){@Override public void onChange(boolean self){refresh();}};
-        app.getContentResolver().registerContentObserver(ROOT,true,observer);worker.post(this::refresh);
+        ContentObserver observer=new ContentObserver(worker){
+            @Override public void onChange(boolean self){refresh();}
+            @Override public void onChange(boolean self,Uri uri){
+                if (affectsQuickSwitch(uri)) refresh();
+            }
+        };
+        // Only preferences are relevant. Ignore framework status and unrelated keys.
+        app.getContentResolver().registerContentObserver(PREF_CHANGES,true,observer);worker.post(this::refresh);
         registerHotReloadCleanup(()->{app.getContentResolver().unregisterContentObserver(observer);thread.quitSafely();});
+    }
+    /** Null/parent notifications remain conservative; ordinary per-key writes are filtered. */
+    private static boolean affectsQuickSwitch(Uri uri) {
+        if (uri == null) return true;
+        java.util.List<String> parts=uri.getPathSegments();
+        if (parts.size()==1) return "pref".equals(parts.get(0));
+        if (parts.size()!=3||!"pref".equals(parts.get(0))) return false;
+        String key=parts.get(2);
+        return "prefs_key_home_navigation_quick_back".equals(key)
+            || "prefs_key_home_gesture_enable".equals(key);
     }
     private void refresh() {
         boolean value=false;
