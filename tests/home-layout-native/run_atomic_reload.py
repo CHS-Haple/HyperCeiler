@@ -13,6 +13,8 @@ with tempfile.TemporaryDirectory(prefix='hc-atomic-reload-') as out:
     sources += [root/'library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/home/dock/HomeLayoutNativeEndpointOS4.java', tests/'HomeLayoutAtomicReloadTest.java']
     helper = root/'library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeLayoutPrefsSnapshot.java'
     if helper.exists(): sources.append(helper)
+    haptic = root / "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeRecentsHapticPrefs.java"
+    if haptic.exists(): sources.append(haptic)
     gesture = root/'library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeGesturePrefsSnapshot.java'
     if gesture.exists(): sources.append(gesture)
     gate = root/'library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/base/FrameworkHookGate.java'

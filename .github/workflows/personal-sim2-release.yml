@@ -1,9 +1,9 @@
-name: Personal CPU Validation Release (Fork Only)
+name: Personal CPU + Provider Snapshot Validation Release (Fork Only)
 
 on:
   push:
     branches:
-      - personal/cpu-provider-relief
+      - personal/cpu-provider-snapshot-v2
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,29 @@ permissions:
   packages: read
 
 concurrency:
-  group: personal-cpu-validation-release-${{ github.ref }}
+  group: personal-cpu-provider-v2-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  native_host_tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Native hook and desktop host regression suites
+        run: bash tests/run_host_native_tests.sh
+      - name: Zero-length maps and image inventory regressions (4K + 16K)
+        run: python3 tests/hyos-image-inventory/run.py
+      - name: Home layout and atomic provider/haptic snapshot regressions
+        run: |
+          python3 tests/home-layout-native/run_idle_snapshot.py
+          python3 tests/home-layout-native/run_atomic_reload.py
+
   release:
+    needs: native_host_tests
     if: github.repository == 'CHS-Haple/HyperCeiler'
     runs-on: macos-latest
     timeout-minutes: 60
@@ -41,7 +59,7 @@ jobs:
       - name: Record immutable build input
         run: |
           test "$GITHUB_REPOSITORY" = "CHS-Haple/HyperCeiler"
-          test "$GITHUB_REF_NAME" = "personal/cpu-provider-relief"
+          test "$GITHUB_REF_NAME" = "personal/cpu-provider-snapshot-v2"
           git rev-parse HEAD
           git status --porcelain
 
@@ -111,7 +129,7 @@ jobs:
       - name: Upload personal Release APK
         uses: actions/upload-artifact@v7
         with:
-          name: HyperCeiler-CPU-Validation-Release
+          name: HyperCeiler-CPU-Provider-Snapshot-Validation-Release
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14

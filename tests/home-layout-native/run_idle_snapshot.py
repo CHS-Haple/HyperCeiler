@@ -15,6 +15,8 @@ with tempfile.TemporaryDirectory(prefix="hc-idle-snapshot-") as out:
     sources = list((tests / "stubs").rglob("*.java")) + list((workspace / "tests/home-dock-window/stubs").rglob("*.java")) + [tests / "HomeLayoutIdleSnapshotTest.java", tests / "HomeLayoutNativeEndpointOS4Test.java", root / endpoint]
     helper = root / "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeLayoutPrefsSnapshot.java"
     if helper.exists(): sources.append(helper)
+    haptic = root / "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeRecentsHapticPrefs.java"
+    if haptic.exists(): sources.append(haptic)
     gesture = root / "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/provider/HomeGesturePrefsSnapshot.java"
     if gesture.exists(): sources.append(gesture)
     gate = root / "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/base/FrameworkHookGate.java"
