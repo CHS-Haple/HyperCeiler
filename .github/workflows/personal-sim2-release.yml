@@ -31,6 +31,8 @@ jobs:
         run: |
           python3 tests/home-layout-native/run_idle_snapshot.py
           python3 tests/home-layout-native/run_atomic_reload.py
+      - name: Recents haptic shipping runtime, prefs, protocol and fixture regressions
+        run: python3 tests/recents-haptic-os4/run.py
 
   release:
     needs: native_host_tests
