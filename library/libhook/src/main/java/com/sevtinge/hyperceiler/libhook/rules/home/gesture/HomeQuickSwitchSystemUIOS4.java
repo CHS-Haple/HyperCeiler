@@ -241,7 +241,10 @@ public final class HomeQuickSwitchSystemUIOS4 extends BaseHook {
         if (parts.size()!=3||!"pref".equals(parts.get(0))) return false;
         String key=parts.get(2);
         return "prefs_key_home_navigation_quick_back".equals(key)
-            || "prefs_key_home_gesture_enable".equals(key);
+            || "prefs_key_home_gesture_enable".equals(key)
+            // Revoking module/framework authorization must still retire an in-flight gesture.
+            || "prefs_key_allow_hook".equals(key)
+            || "prefs_key_framework_api_allow_hook".equals(key);
     }
     private void refresh() {
         boolean value=false;
