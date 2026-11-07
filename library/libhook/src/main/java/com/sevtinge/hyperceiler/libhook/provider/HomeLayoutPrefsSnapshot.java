@@ -212,6 +212,16 @@ public final class HomeLayoutPrefsSnapshot {
                 extras.putInt(RECENT_HEADER_FLAGS, (Boolean.TRUE.equals(hideIcon) ? 1 : 0)
                     | (Boolean.TRUE.equals(hideText) ? 2 : 0));
             }
+            // Optional HCV2 haptic profile, serialized from the SAME getAll() revision.
+            // The legacy dedicated endpoint remains available to older consumers.
+            HomeRecentsHapticPrefs.Snapshot haptic = HomeRecentsHapticPrefs.snapshot(values);
+            if (haptic != null) {
+                extras.putInt(HomeRecentsHapticPrefs.SNAPSHOT_VERSION, 1);
+                extras.putInt(HomeRecentsHapticPrefs.ENABLED, haptic.enabled());
+                extras.putInt(HomeRecentsHapticPrefs.CLOSE, haptic.close());
+                extras.putInt(HomeRecentsHapticPrefs.TYPE, haptic.type());
+                extras.putInt(HomeRecentsHapticPrefs.STRENGTH, haptic.strength());
+            }
             result.setExtras(extras);
             return result;
         } catch (RuntimeException unavailable) { return null; }
