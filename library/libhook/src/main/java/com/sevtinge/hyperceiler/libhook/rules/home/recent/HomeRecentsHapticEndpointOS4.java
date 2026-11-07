@@ -2,7 +2,6 @@
 package com.sevtinge.hyperceiler.libhook.rules.home.recent;
 
 import android.content.Context;
-import android.net.Uri;
 import android.os.Binder;
 import android.os.Parcel;
 import android.os.PowerManager;
@@ -10,13 +9,13 @@ import android.os.SystemClock;
 import android.app.KeyguardManager;
 import com.sevtinge.hyperceiler.common.log.ModuleLog;
 import com.sevtinge.hyperceiler.libhook.rules.home.gesture.HomeQuickSwitchOS4;
+import com.sevtinge.hyperceiler.libhook.rules.home.dock.HomeLayoutNativeEndpointOS4;
 import com.sevtinge.hyperceiler.libhook.utils.api.ContextUtils;
 
 /** HCV1 scroll compatibility and HCV2 independent close channel, both use one provider snapshot. */
 public final class HomeRecentsHapticEndpointOS4 {
     public static final int TRANSACTION=HomeRecentsHapticProtocol.TRANSACTION,ACK=HomeRecentsHapticProtocol.ACK;
     public static final int TRANSACTION_V2=HomeRecentsHapticProtocol.TRANSACTION_V2;
-    private static final Uri PREFS=Uri.parse("content://com.sevtinge.hyperceiler.provider.sharedprefs/home_recents_haptic");
     private static int reported;
     private HomeRecentsHapticEndpointOS4() {}
     public static void receive(Parcel data,Parcel reply,int flags) {receive(data,reply,flags,false);}
@@ -31,22 +30,22 @@ public final class HomeRecentsHapticEndpointOS4 {
                 ||context==null||!HomeQuickSwitchOS4.isLauncher(context,Binder.getCallingUid(),Binder.getCallingPid())){
                 writeReply(reply,extended,0,0,0,0,50,0);return;
             }
-            long token=Binder.clearCallingIdentity();
-            try(var cursor=context.getContentResolver().query(PREFS,null,null,null,null)){
-                if(cursor!=null&&cursor.getColumnCount()==4&&cursor.moveToFirst()&&cursor.getInt(0)==1){
-                    enabled=cursor.getInt(1);type=cursor.getInt(2);strength=cursor.getInt(3);
-                    var extras=cursor.getExtras();
-                    close=extras!=null&&extras.getInt("close_version",0)==1?extras.getInt("close_enabled",0):0;
-                    if(enabled<0||enabled>1||close<0||close>1||type<0||type>3||strength<10||strength>100)
-                        throw new IllegalArgumentException("Invalid recents haptic snapshot");
-                    available=1;
-                    if(operation==0)result=1;
-                    else if((operation==2?close:enabled)==1&&SystemClock.uptimeMillis()-timestamp<=200
-                        &&context.getSystemService(PowerManager.class).isInteractive()
-                        &&!context.getSystemService(KeyguardManager.class).isKeyguardLocked())
-                        result=HomeRecentsHapticOS4.perform(context,type,strength,count)?1:0;
+            // Consume the same validated, short-lived provider revision as native layout.
+            // Never synchronously cold-start the module app from a WMS Binder transaction.
+            var profile=HomeLayoutNativeEndpointOS4.recentsHapticPreference();
+            if(profile.available()==1){
+                available=1;enabled=profile.enabled();close=profile.close();
+                type=profile.type();strength=profile.strength();
+                if(operation==0)result=1;
+                else if((operation==2?close:enabled)==1&&SystemClock.uptimeMillis()-timestamp<=200){
+                    long token=Binder.clearCallingIdentity();
+                    try {
+                        if(context.getSystemService(PowerManager.class).isInteractive()
+                            &&!context.getSystemService(KeyguardManager.class).isKeyguardLocked())
+                            result=HomeRecentsHapticOS4.perform(context,type,strength,count)?1:0;
+                    } finally {Binder.restoreCallingIdentity(token);}
                 }
-            } finally {Binder.restoreCallingIdentity(token);}
+            }
         } catch(Exception failure){
             if(reported++<3)ModuleLog.w("HyperCeiler.HomeLayout","recents haptic endpoint unavailable",failure);
         }

@@ -14,6 +14,7 @@ import com.sevtinge.hyperceiler.libhook.base.BaseHook;
 import com.sevtinge.hyperceiler.libhook.base.BaseLoad;
 import com.sevtinge.hyperceiler.libhook.base.FrameworkHookGate;
 import com.sevtinge.hyperceiler.libhook.provider.HomeLayoutPrefsSnapshot;
+import com.sevtinge.hyperceiler.libhook.provider.HomeRecentsHapticPrefs;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -109,7 +110,8 @@ public final class HomeLayoutNativeEndpointOS4 {
 
     // One immutable provider revision owns both authorization and the decoded layout.
     private record PublishedSnapshot(java.util.Map<String, Object> values, String reason,
-        FrameworkHookGate.Fingerprint framework, Snapshot layout, long epoch, long revision,
+        FrameworkHookGate.Fingerprint framework, Snapshot layout,
+        HomeRecentsHapticPrefs.Snapshot haptic, long epoch, long revision,
         long deadline) { }
 
     public record CombinedSnapshot(int available, int flags, long epoch, long revision,
@@ -139,7 +141,7 @@ public final class HomeLayoutNativeEndpointOS4 {
     private static void invalidateCombinedLocked() {
         hyosSnapshotLive = false;
         if (combinedEpoch == 0) { combinedPublished = null; return; }
-        combinedPublished = new PublishedSnapshot(null, null, null, null, combinedEpoch,
+        combinedPublished = new PublishedSnapshot(null, null, null, null, null, combinedEpoch,
             ++combinedRevision, 0);
     }
 
@@ -152,6 +154,7 @@ public final class HomeLayoutNativeEndpointOS4 {
         final String segment = path.substring(slash + 1);
         final String key = segment.startsWith("prefs_key_")
             ? segment.substring("prefs_key_".length()) : segment;
+        if (HomeRecentsHapticPrefs.isPreferenceKey(key)) return true;
         if (HomeLayoutPrefsSnapshot.DISMISS_KEY.equals(key)
             || HomeLayoutPrefsSnapshot.RECENT_ICON_KEY.equals(key)
             || HomeLayoutPrefsSnapshot.RECENT_TEXT_KEY.equals(key)
@@ -400,7 +403,8 @@ public final class HomeLayoutNativeEndpointOS4 {
             hyosSnapshotAtNanos = System.nanoTime();
             hyosSnapshotLive = true;
             combinedPublished = new PublishedSnapshot(complete, cachedFrameworkReason,
-                cachedFrameworkFingerprint, layout, combinedEpoch, ++combinedRevision, deadline);
+                cachedFrameworkFingerprint, layout, source.haptic(),
+                combinedEpoch, ++combinedRevision, deadline);
         }
         return true;
     }
@@ -424,7 +428,7 @@ public final class HomeLayoutNativeEndpointOS4 {
     }
 
     private record ProviderSnapshot(java.util.Map<String, Object> values, String reason,
-        FrameworkHookGate.Fingerprint framework) { }
+        FrameworkHookGate.Fingerprint framework, HomeRecentsHapticPrefs.Snapshot haptic) { }
 
     private static ProviderSnapshot queryProviderSnapshot() {
         final android.content.Context context =
@@ -434,6 +438,7 @@ public final class HomeLayoutNativeEndpointOS4 {
         final java.util.Map<String, Object> values = new java.util.HashMap<>();
         final java.util.Map<String, String> frameworkText = new java.util.HashMap<>();
         long frameworkVersionCode = Long.MIN_VALUE;
+        HomeRecentsHapticPrefs.Snapshot haptic = null;
         try {
             final android.content.ContentResolver resolver = context.getContentResolver();
             if (resolver == null) return null;
@@ -443,6 +448,15 @@ public final class HomeLayoutNativeEndpointOS4 {
                 // It must not erase a complete cache, especially while an APK is being replaced.
                 if (!isProviderSchema(cursor)) return null;
                 final android.os.Bundle extras = cursor.getExtras();
+                if (extras != null && extras.getInt(HomeRecentsHapticPrefs.SNAPSHOT_VERSION, 0) == 1) {
+                    int enabled = extras.getInt(HomeRecentsHapticPrefs.ENABLED, -1);
+                    int close = extras.getInt(HomeRecentsHapticPrefs.CLOSE, -1);
+                    int type = extras.getInt(HomeRecentsHapticPrefs.TYPE, -1);
+                    int strength = extras.getInt(HomeRecentsHapticPrefs.STRENGTH, -1);
+                    if ((enabled == 0 || enabled == 1) && (close == 0 || close == 1)
+                        && type >= 0 && type <= 3 && strength >= 10 && strength <= 100)
+                        haptic = new HomeRecentsHapticPrefs.Snapshot(enabled, close, type, strength);
+                }
                 if (extras != null && extras.getInt(HomeLayoutPrefsSnapshot.DISMISS_VERSION, 0) == 1) {
                     int dismiss = extras.getInt(HomeLayoutPrefsSnapshot.DISMISS_KEY, -1);
                     if (dismiss == 0 || dismiss == 1) values.put(HomeLayoutPrefsSnapshot.DISMISS_KEY, dismiss);
@@ -492,7 +506,7 @@ public final class HomeLayoutNativeEndpointOS4 {
         return new ProviderSnapshot(java.util.Collections.unmodifiableMap(values),
             frameworkText.get("framework_check_reason"),
             new FrameworkHookGate.Fingerprint(frameworkText.get("framework_check_name"),
-                frameworkText.get("framework_check_version"), frameworkVersionCode));
+                frameworkText.get("framework_check_version"), frameworkVersionCode), haptic);
     }
 
     private static boolean isProviderSchema(android.database.Cursor cursor) {
@@ -735,6 +749,25 @@ public final class HomeLayoutNativeEndpointOS4 {
         if (!validCombinedLayout(value.layout())) return unavailableCombined(value);
         return new CombinedSnapshot(1, flags, value.epoch(), value.revision(),
             value.deadline(), value.layout());
+    }
+
+    /** Recent-card feedback reuses the layout worker's physical-file publication. No
+     * extra provider query on the launcher's one-second profile requests. */
+    public record RecentsHapticPreference(int available, int enabled, int close, int type, int strength) { }
+    private static RecentsHapticPreference unavailableHaptic() {
+        return new RecentsHapticPreference(0, 0, 0, 0, 50);
+    }
+    public static RecentsHapticPreference recentsHapticPreference() {
+        final PublishedSnapshot publication = combinedPublished;
+        final long now = SystemClock.elapsedRealtimeNanos();
+        if (!isCombinedLeaseLive(publication, now) || publication.haptic() == null)
+            return unavailableHaptic();
+        final HomeRecentsHapticPrefs.Snapshot profile = publication.haptic();
+        if (combinedPublished != publication ||
+            !isCombinedLeaseLive(publication, SystemClock.elapsedRealtimeNanos()))
+            return unavailableHaptic();
+        return new RecentsHapticPreference(1, profile.enabled(), profile.close(),
+            profile.type(), profile.strength());
     }
 
     /** Same immutable physical-file publication and authorization as combined layout. */

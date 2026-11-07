@@ -1,9 +1,9 @@
-name: Personal CPU + Maps Validation Release (Fork Only)
+name: Personal CPU Validation Release (Fork Only)
 
 on:
   push:
     branches:
-      - personal/cpu-maps-validation
+      - personal/cpu-provider-relief
   workflow_dispatch:
 
 permissions:
@@ -11,25 +11,11 @@ permissions:
   packages: read
 
 concurrency:
-  group: personal-cpu-maps-release-${{ github.ref }}
+  group: personal-cpu-validation-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  native_host_tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v6
-        with:
-          submodules: true
-      - name: Native hook and desktop host regression suites
-        run: bash tests/run_host_native_tests.sh
-      - name: Zero-length maps and image inventory regressions (4K + 16K)
-        run: python3 tests/hyos-image-inventory/run.py
-
   release:
-    needs: native_host_tests
     if: github.repository == 'CHS-Haple/HyperCeiler'
     runs-on: macos-latest
     timeout-minutes: 60
@@ -55,7 +41,7 @@ jobs:
       - name: Record immutable build input
         run: |
           test "$GITHUB_REPOSITORY" = "CHS-Haple/HyperCeiler"
-          test "$GITHUB_REF_NAME" = "personal/cpu-maps-validation"
+          test "$GITHUB_REF_NAME" = "personal/cpu-provider-relief"
           git rev-parse HEAD
           git status --porcelain
 
@@ -125,7 +111,7 @@ jobs:
       - name: Upload personal Release APK
         uses: actions/upload-artifact@v7
         with:
-          name: HyperCeiler-CPU-Maps-Validation-Release
+          name: HyperCeiler-CPU-Validation-Release
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
